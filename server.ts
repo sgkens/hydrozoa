@@ -402,7 +402,8 @@ async function startServer() {
         const url = `https://api.github.com/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=100`;
         const reposRes = await fetch(url, { headers: { 'Authorization': `token ${token}` } });
         const reposData = await reposRes.json();
-        return res.json(reposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.name, description: repo.description })));
+        const safeReposData = Array.isArray(reposData) ? reposData : [];
+        return res.json(safeReposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.name, description: repo.description })));
       }
 
       if (sourceProvider.type.includes('gitlab')) {
@@ -411,7 +412,8 @@ async function startServer() {
           : `${baseUrl}/api/v4/projects?owned=true&per_page=100`;
         const reposRes = await fetch(url, { headers: { 'Private-Token': token } });
         const reposData = await reposRes.json();
-        return res.json(reposData.map((project: any) => ({ id: project.id.toString(), name: project.path_with_namespace, description: project.description })));
+        const safeReposData = Array.isArray(reposData) ? reposData : [];
+        return res.json(safeReposData.map((project: any) => ({ id: project.id.toString(), name: project.path_with_namespace, description: project.description })));
       }
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
@@ -421,7 +423,8 @@ async function startServer() {
         const url = isUser ? `${baseUrl}/api/v1/user/repos` : `${baseUrl}/api/v1/orgs/${id}/repos`;
         const reposRes = await fetch(url, { headers: { 'Authorization': `token ${token}` } });
         const reposData = await reposRes.json();
-        return res.json(reposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.full_name, description: repo.description })));
+        const safeReposData = Array.isArray(reposData) ? reposData : [];
+        return res.json(safeReposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.full_name, description: repo.description })));
       }
 
       if (sourceProvider.type === 'bitbucket') {
