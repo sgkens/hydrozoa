@@ -45,6 +45,7 @@ interface Provider {
   type: string;
   baseUrl: string;
   token: string;
+  isSource?: boolean;
 }
 
 interface SyncTarget {
@@ -227,12 +228,22 @@ const StatCard = ({ title, value, icon: Icon, color, delay }: { title: string, v
   </motion.div>
 );
 
-const SyncMatrix = ({ items, providers, settings }: { items: SyncMatrixItem[], providers: Provider[], settings: any }) => {
+const SyncMatrix = ({ items, providers, settings, onManualSync }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void }) => {
   const getProvider = (id: string) => providers.find(p => p.id === id);
   const [selectedItem, setSelectedItem] = useState<SyncMatrixItem | null>(null);
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-xl font-black text-white uppercase tracking-tighter">Sync Matrix</h3>
+        <button 
+          onClick={() => items.forEach(item => onManualSync(item.id))}
+          className="flex items-center gap-2 px-4 py-2 bg-white/5 text-cyan-400 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/10 transition-all border border-cyan-500/20"
+        >
+          <RefreshCw className="w-3 h-3" />
+          Sync All Nodes
+        </button>
+      </div>
       <AnimatePresence>
         {selectedItem && (
           <SyncHistoryModal item={selectedItem} onClose={() => setSelectedItem(null)} />
@@ -335,7 +346,7 @@ const SyncMatrix = ({ items, providers, settings }: { items: SyncMatrixItem[], p
               </div>
 
               <div className="col-span-2">
-                <div className="flex flex-wrap gap-3">
+                <div className="flex flex-wrap gap-3 items-center">
                   {item.targets.map((target, tIdx) => {
                     const p = getProvider(target.provider_id);
                     return (
@@ -377,6 +388,13 @@ const SyncMatrix = ({ items, providers, settings }: { items: SyncMatrixItem[], p
                       </div>
                     );
                   })}
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); onManualSync(item.id); }}
+                    className="p-2 glass-card hover:bg-cyan-500/10 text-cyan-400 transition-all rounded-xl border border-cyan-500/20"
+                    title="Manual Sync"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
             </div>
@@ -663,8 +681,7 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   return res;
 };
 
-const SourceSelection = ({ providers }: { providers: Provider[] }) => {
-  const [namespaces, setNamespaces] = useState<Namespace[]>([]);
+const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>> }) => {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
   const [repos, setRepos] = useState<Record<string, Repository[]>>({});
   const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
@@ -673,11 +690,15 @@ const SourceSelection = ({ providers }: { providers: Provider[] }) => {
 
   const [isSaving, setIsSaving] = useState(false);
 
+  const sourceProvider = providers.find(p => p.isSource);
+
   useEffect(() => {
-    fetchWithAuth('/api/v1/source/namespaces')
-      .then(res => res.json())
-      .then(setNamespaces);
-  }, []);
+    if (sourceProvider && namespaces.length === 0) {
+      fetchWithAuth('/api/v1/source/namespaces')
+        .then(res => res.json())
+        .then(setNamespaces);
+    }
+  }, [sourceProvider, namespaces.length]);
 
   const toggleNamespace = async (nsId: string) => {
     if (expandedNamespace === nsId) {
@@ -856,14 +877,25 @@ const SourceSelection = ({ providers }: { providers: Provider[] }) => {
           </div>
           <div>
             <h3 className="text-xl font-black text-white uppercase tracking-tighter">Source Selection</h3>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Select the repositories you want to mirror from your source providers.</p>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
+              {sourceProvider ? `Fetching from ${sourceProvider.name}` : 'No source provider selected. Set one in the Providers tab.'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
+            {sourceProvider && (
+              <button 
+                onClick={onRefresh}
+                className="px-4 py-2 bg-white/5 text-cyan-400 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/10 transition-all border border-cyan-500/20 flex items-center gap-2"
+              >
+                <RefreshCw className="w-3 h-3" />
+                Refresh Repos
+              </button>
+            )}
             <button 
               onClick={saveSelection}
-              disabled={isSaving}
+              disabled={isSaving || !sourceProvider}
               className="px-6 py-2 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-400 transition-all glow-cyan disabled:opacity-50"
             >
               {isSaving ? 'Provisioning...' : 'Initiate Mirroring'}
@@ -994,6 +1026,7 @@ function AppContent() {
   const [metrics, setMetrics] = useState<any[]>([]);
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   const [providersInfo, setProvidersInfo] = useState<ProviderInfo[]>([]);
+  const [namespaces, setNamespaces] = useState<Namespace[]>([]);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [passwordReset, setPasswordReset] = useState({ current: '', new: '', confirm: '' });
@@ -1184,6 +1217,59 @@ function AppContent() {
       </div>
     );
   }
+
+  const handleSetSource = async (id: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/v1/auth/providers/${id}/set-source`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setProviders(providers.map(p => ({
+          ...p,
+          isSource: p.id === id
+        })));
+        // Refresh namespaces if we are on the source tab
+        if (activeTab === 'source') {
+          fetchWithAuth('/api/v1/source/namespaces')
+            .then(res => res.json())
+            .then(setNamespaces);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to set source", err);
+    }
+  };
+
+  const handleManualSync = async (id: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/v1/sync/manual/${id}`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSyncMatrix(syncMatrix.map(s => s.id === id ? data.item : s));
+      }
+    } catch (err) {
+      console.error("Failed to trigger manual sync", err);
+    }
+  };
+
+  const handleRefreshRepos = async () => {
+    try {
+      const res = await fetchWithAuth('/api/v1/source/refresh', {
+        method: 'POST'
+      });
+      if (res.ok) {
+        // Re-fetch namespaces
+        const nsRes = await fetchWithAuth('/api/v1/source/namespaces');
+        const nsData = await nsRes.json();
+        setNamespaces(nsData);
+      }
+    } catch (err) {
+      console.error("Failed to refresh repos", err);
+    }
+  };
 
   const handleAddProvider = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1523,7 +1609,12 @@ function AppContent() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-6"
             >
-              <SourceSelection providers={providers} />
+              <SourceSelection 
+                providers={providers} 
+                onRefresh={handleRefreshRepos} 
+                namespaces={namespaces}
+                setNamespaces={setNamespaces}
+              />
             </motion.div>
           )}
 
@@ -1535,7 +1626,7 @@ function AppContent() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-6"
             >
-              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} />
+              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} onManualSync={handleManualSync} />
             </motion.div>
           )}
 
@@ -1569,8 +1660,13 @@ function AppContent() {
                   >
                     <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 blur-3xl -mr-16 -mt-16 group-hover:bg-cyan-500/10 transition-all" />
                     <div className="flex justify-between items-start mb-6 relative z-10">
-                      <div className="p-4 bg-white/5 rounded-2xl group-hover:bg-cyan-500/10 transition-colors border border-white/5">
+                      <div className="p-4 bg-white/5 rounded-2xl group-hover:bg-cyan-500/10 transition-colors border border-white/5 relative">
                         {p.type.includes('github') ? <Github className="w-8 h-8 text-slate-300 group-hover:text-cyan-400" /> : <Gitlab className="w-8 h-8 text-slate-300 group-hover:text-magenta-400" />}
+                        {p.isSource && (
+                          <div className="absolute -top-2 -right-2 bg-cyan-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest shadow-lg shadow-cyan-500/50">
+                            Source
+                          </div>
+                        )}
                       </div>
                       <div className="flex flex-col items-end">
                         <div className="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-[10px] font-black uppercase tracking-widest rounded-full border border-emerald-500/20 flex items-center gap-1.5">
@@ -1587,12 +1683,22 @@ function AppContent() {
                         <ShieldCheck className="w-3 h-3 text-slate-600" />
                         <span className="text-[10px] text-slate-600 font-black font-mono tracking-widest">{p.token}</span>
                       </div>
-                      <button 
-                        onClick={() => setEditingProvider(p)}
-                        className="text-[10px] text-cyan-400 font-black uppercase tracking-widest hover:text-white transition-colors"
-                      >
-                        Configure
-                      </button>
+                      <div className="flex items-center gap-3">
+                        {!p.isSource && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleSetSource(p.id); }}
+                            className="text-[10px] text-emerald-400 font-black uppercase tracking-widest hover:text-white transition-colors"
+                          >
+                            Set Source
+                          </button>
+                        )}
+                        <button 
+                          onClick={() => setEditingProvider(p)}
+                          className="text-[10px] text-cyan-400 font-black uppercase tracking-widest hover:text-white transition-colors"
+                        >
+                          Configure
+                        </button>
+                      </div>
                     </div>
                   </motion.div>
                 ))}
