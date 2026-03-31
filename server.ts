@@ -498,8 +498,8 @@ async function startServer() {
       }
 
       return res.json([]);
-    } catch (err) {
-      sysLog.error(`Failed to fetch namespaces: ${err}`);
+    } catch (err: any) {
+      sysLog.error(`Failed to fetch namespaces: ${err.message}${err.cause ? ` (Cause: ${err.cause})` : ''}`);
       res.status(500).json({ error: "Failed to fetch namespaces from provider" });
     }
   });
@@ -614,8 +614,8 @@ async function startServer() {
 
 
       return res.json([]);
-    } catch (err) {
-      sysLog.error(`Failed to fetch repos: ${err}`);
+    } catch (err: any) {
+      sysLog.error(`Failed to fetch repos: ${err.message}${err.cause ? ` (Cause: ${err.cause})` : ''}`);
       res.status(500).json({ error: "Failed to fetch repositories from provider" });
     }
   });

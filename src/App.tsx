@@ -703,8 +703,9 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
   useEffect(() => {
     if (sourceProvider && namespaces.length === 0) {
       fetchWithAuth('/api/v1/source/namespaces')
-        .then(res => res.json())
-        .then(setNamespaces);
+        .then(res => res.ok ? res.json() : [])
+        .then(data => setNamespaces(Array.isArray(data) ? data : []))
+        .catch(() => setNamespaces([]));
     }
   }, [sourceProvider, namespaces.length]);
 
@@ -714,9 +715,14 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
     } else {
       setExpandedNamespace(nsId);
       if (!repos[nsId]) {
-        const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos`);
-        const data = await res.json();
-        setRepos(prev => ({ ...prev, [nsId]: data }));
+        try {
+          const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos`);
+          const data = await res.json();
+          setRepos(prev => ({ ...prev, [nsId]: Array.isArray(data) ? data : [] }));
+        } catch (err) {
+          console.error("Failed to fetch repos", err);
+          setRepos(prev => ({ ...prev, [nsId]: [] }));
+        }
       }
     }
   };
