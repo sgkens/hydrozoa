@@ -95,6 +95,7 @@ All requests (except login) require a `Bearer` token in the `Authorization` head
 - **GET** `/api/v1/system/sync-matrix`: Retrieve the current status of all mirror pairs.
 - **GET** `/api/v1/system/dlq`: List items in the Dead Letter Queue.
 - **POST** `/api/v1/system/dlq/:id/replay`: Re-trigger a failed sync operation.
+- **GET** `/health`: Check system health and database connectivity.
 
 ### **Provider Management**
 - **GET** `/api/v1/auth/providers`: List configured Git providers.

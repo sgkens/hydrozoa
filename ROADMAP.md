@@ -6,21 +6,20 @@
 ### **Features**
 - [x] **Real-Time Sync Engine**: Mirror code using `git --mirror`.
 - [x] **Entity Sync (Phase 1)**: Basic Issue, Milestone, and Release mirroring for GitHub <-> GitLab.
+- [x] **Entity Sync (Phase 2)**: 
+    - [x] Deduplication logic (check if issue/milestone exists before creating).
+    - [x] Support for Gitea, Forgejo, and Bitbucket entities.
 - [x] **Granular Selection**: UI/Backend support for selecting specific entities per repository.
 - [x] **Styled Console**: Professional ANSI output with ASCII header.
 - [x] **Real Analytics**: Database-driven metrics for sync performance.
 - [x] **Health Checks**: `/health` endpoint for monitoring.
-- [ ] **Entity Sync (Phase 2)**: 
-    - [ ] Deduplication logic (check if issue/milestone exists before creating).
-    - [ ] Support for Gitea, Forgejo, and Bitbucket entities.
-    - [ ] Pagination support for large repository collections.
+- [x] **UI Refinements**:
+    - [x] Provisioning summary modal after source selection.
+    - [x] Edit sync entities from the Sync Matrix tab.
+    - [x] Real latency monitoring for providers.
 - [ ] **Improved Automation**:
     - [ ] HMAC verification for incoming webhooks.
-    - [ ] Automatic sync on webhook trigger.
-- [ ] **UI Refinements**:
-    - [ ] Provisioning summary modal after source selection.
-    - [ ] Edit sync entities from the Sync Matrix tab.
-    - [ ] Real latency monitoring for providers.
+    - [ ] Automatic sync on webhook trigger (Partial: Trigger logic exists, needs HMAC).
 
 ### **Bug Fixes**
 - [x] Fix `DATABASE_URL` parsing with special characters.
@@ -34,3 +33,4 @@
 - [ ] Bidirectional sync conflict resolution UI.
 - [ ] OIDC / OAuth2 integration for admin login.
 - [ ] Worker node distribution (scaling).
+- [ ] Pagination support for large repository collections.

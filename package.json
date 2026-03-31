@@ -1,7 +1,7 @@
 {
   "name": "hydrozoa",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0-rc.1",
   "type": "module",
   "scripts": {
     "dev": "tsx --env-file=.env server.ts",
@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
+    "migrate": "node --env-file=.env -e 'import(\"./server.js\")'",
     "start": "node --env-file=.env server.ts"
   },
   "dependencies": {
