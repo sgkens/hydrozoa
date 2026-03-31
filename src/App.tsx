@@ -229,7 +229,7 @@ const StatCard = ({ title, value, icon: Icon, color, delay }: { title: string, v
   </motion.div>
 );
 
-const SyncMatrix = ({ items, providers, settings, onManualSync }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void }) => {
+const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void, onUpdate: () => void }) => {
   const getProvider = (id: string) => providers.find(p => p.id === id);
   const [selectedItem, setSelectedItem] = useState<SyncMatrixItem | null>(null);
 
@@ -237,7 +237,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync }: { items: SyncM
     <div className="space-y-4">
       <div className="flex justify-between items-center mb-2">
         <h3 className="text-xl font-black text-white uppercase tracking-tighter">Sync Matrix</h3>
-        <button 
+        <button
           onClick={() => items.forEach(item => onManualSync(item.id))}
           className="flex items-center gap-2 px-4 py-2 bg-white/5 text-cyan-400 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/10 transition-all border border-cyan-500/20"
         >
@@ -247,10 +247,9 @@ const SyncMatrix = ({ items, providers, settings, onManualSync }: { items: SyncM
       </div>
       <AnimatePresence>
         {selectedItem && (
-          <SyncHistoryModal item={selectedItem} onClose={() => setSelectedItem(null)} />
+          <SyncManagementModal item={selectedItem} onClose={() => setSelectedItem(null)} onUpdate={onUpdate} />
         )}
       </AnimatePresence>
-
       <div className="hidden md:grid grid-cols-6 gap-4 px-6 py-3 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">
         <div className="col-span-1">Source Repository</div>
         <div className="col-span-1">Branch / Commit</div>
@@ -300,9 +299,21 @@ const SyncMatrix = ({ items, providers, settings, onManualSync }: { items: SyncM
                     <Github className="w-5 h-5 text-slate-400 group-hover:text-cyan-400 transition-colors" />
                   </div>
                   <div>
-                    <span className="text-white font-black tracking-tight block">{item.source_repo}</span>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Interval: {item.sync_interval}m</span>
+                   <span className="text-white font-black tracking-tight block">{item.source_repo}</span>
+                   <div className="flex items-center gap-2 mt-1">
+                     <div className="flex gap-1 mr-2">
+                       {(item.entities || ['code']).map(ent => (
+                         <div key={ent} title={ent} className="w-3 h-3 rounded-[2px] bg-cyan-500/20 flex items-center justify-center">
+                           {ent === 'code' && <Terminal className="w-2 h-2 text-cyan-400" />}
+                           {ent === 'issues' && <AlertTriangle className="w-2 h-2 text-cyan-400" />}
+                           {ent === 'milestones' && <Flag className="w-2 h-2 text-cyan-400" />}
+                           {ent === 'releases' && <Tag className="w-2 h-2 text-cyan-400" />}
+                           {ent === 'wiki' && <Book className="w-2 h-2 text-cyan-400" />}
+                         </div>
+                       ))}
+                     </div>
+                     <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Interval: {item.sync_interval}m</span>
+
                       {settings.bidirectional_sync && (
                         <span className="px-1.5 py-0.5 bg-cyan-500/10 text-cyan-400 text-[8px] font-black uppercase tracking-widest rounded border border-cyan-500/20">Bidirectional</span>
                       )}
@@ -607,62 +618,141 @@ const SystemsPage = ({ stats, providersInfo, logs, providers }: { stats: SystemS
   );
 };
 
-const SyncHistoryModal = ({ item, onClose }: { item: SyncMatrixItem, onClose: () => void }) => {
+const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem, onClose: () => void, onUpdate: () => void }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'history' | 'settings'>('history');
+  const [entities, setEntities] = useState<string[]>(item.entities || ['code']);
+  const [isUpdating, setIsSaving] = useState(false);
+
+  const toggleEntity = (ent: string) => {
+    setEntities(prev => prev.includes(ent) ? prev.filter(e => e !== ent) : [...prev, ent]);
+  };
+
+  const handleSaveSettings = async () => {
+    setIsSaving(true);
+    try {
+      const res = await fetchWithAuth(`/api/v1/system/sync-matrix/${item.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ entities })
+      });
+      if (res.ok) {
+        onUpdate();
+        onClose();
+      }
+    } catch (err) {
+      console.error("Failed to update sync settings", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
     >
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.9, y: 20 }}
         animate={{ scale: 1, y: 0 }}
         className="glass-card w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col border-white/10"
       >
         <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/5">
           <div>
-            <h3 className="text-xl font-black text-white uppercase tracking-tighter">Sync History</h3>
+            <h3 className="text-xl font-black text-white uppercase tracking-tighter">Mirror Management</h3>
             <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">{item.source_repo} • {item.branch}</p>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
-            <X className="w-6 h-6 text-slate-400" />
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="flex bg-black/40 rounded-lg p-1 border border-white/5">
+              <button 
+                onClick={() => setActiveSubTab('history')}
+                className={cn("px-4 py-1.5 rounded-md text-[10px] font-black uppercase tracking-widest transition-all", activeSubTab === 'history' ? "bg-white/10 text-cyan-400" : "text-slate-500 hover:text-white")}
+              >History</button>
+              <button 
+                onClick={() => setActiveSubTab('settings')}
+                className={cn("px-4 py-1.5 rounded-md text-[10px] font-black uppercase tracking-widest transition-all", activeSubTab === 'settings' ? "bg-white/10 text-cyan-400" : "text-slate-500 hover:text-white")}
+              >Settings</button>
+            </div>
+            <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-lg transition-colors ml-4">
+              <X className="w-6 h-6 text-slate-400" />
+            </button>
+          </div>
         </div>
-        
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className="p-4 rounded-xl bg-white/5 border border-white/5 flex items-center justify-between group hover:border-cyan-500/30 transition-all">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {activeSubTab === 'history' ? (
+            <div className="space-y-4">
+              {[...Array(5)].map((_, i) => (
+                <div key={i} className="p-4 rounded-xl bg-white/5 border border-white/5 flex items-center justify-between group hover:border-cyan-500/30 transition-all">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-white">Successful Sync</p>
+                      <p className="text-[10px] text-slate-500 font-mono">Commit: {Math.random().toString(16).slice(2, 9)}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">{new Date(Date.now() - i * 3600000).toLocaleString()}</p>
+                    <p className="text-[10px] text-cyan-400 font-bold uppercase tracking-widest mt-1">Duration: {Math.floor(Math.random() * 60)}s</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-white">Successful Sync</p>
-                  <p className="text-[10px] text-slate-500 font-mono">Commit: {Math.random().toString(16).slice(2, 9)}</p>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-8 py-4">
+              <div>
+                <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Synchronized Entities</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  {['code', 'issues', 'milestones', 'releases', 'wiki'].map(ent => (
+                    <button
+                      key={ent}
+                      onClick={() => toggleEntity(ent)}
+                      className={cn(
+                        "p-4 rounded-xl border flex items-center justify-between transition-all",
+                        entities.includes(ent) 
+                          ? "bg-cyan-500/10 border-cyan-500/40 text-white" 
+                          : "bg-white/5 border-white/10 text-slate-500 hover:border-white/20"
+                      )}
+                    >
+                      <span className="text-[10px] font-black uppercase tracking-[0.2em]">{ent}</span>
+                      {entities.includes(ent) ? <CheckCircle2 className="w-4 h-4 text-cyan-400" /> : <Circle className="w-4 h-4 opacity-20" />}
+                    </button>
+                  ))}
                 </div>
               </div>
-              <div className="text-right">
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">{new Date(Date.now() - i * 3600000).toLocaleString()}</p>
-                <p className="text-[10px] text-cyan-400 font-bold uppercase tracking-widest mt-1">Duration: {Math.floor(Math.random() * 60)}s</p>
+
+              <div className="p-6 rounded-2xl bg-cyan-500/5 border border-cyan-500/10">
+                <p className="text-[10px] text-cyan-400/60 leading-relaxed font-bold uppercase tracking-widest">
+                  Changes will take effect during the next scheduled synchronization cycle. Active syncs cannot be modified.
+                </p>
               </div>
             </div>
-          ))}
+          )}
         </div>
-        
-        <div className="p-4 border-t border-white/5 bg-white/5 flex justify-end">
-          <button 
+
+        <div className="p-4 border-t border-white/5 bg-white/5 flex justify-end gap-3">
+          {activeSubTab === 'settings' && (
+            <button
+              onClick={handleSaveSettings}
+              disabled={isUpdating}
+              className="px-8 py-2 bg-cyan-500 hover:bg-cyan-400 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all glow-cyan disabled:opacity-50"
+            >
+              {isUpdating ? 'Saving...' : 'Apply Changes'}
+            </button>
+          )}
+          <button
             onClick={onClose}
             className="px-6 py-2 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all"
           >
-            Close Terminal
+            Close Management
           </button>
         </div>
       </motion.div>
     </motion.div>
   );
 };
-
 const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   const token = localStorage.getItem('hydrozoa_token');
   const headers = {
@@ -690,6 +780,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
   const [selectedTargetProviders, setSelectedTargetProviders] = useState<Set<string>>(new Set());
   const [syncEntities, setSyncEntities] = useState<string[]>(["code"]);
   const [repoEntities, setRepoEntities] = useState<Record<string, string[]>>({});
+  const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
 
@@ -834,7 +925,8 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
         })
       });
       if (res.ok) {
-        alert("Mirror Configuration Persisted. Target repositories will be provisioned if missing.");
+        const data = await res.json();
+        setProvisioningSummary(data.summary);
       }
     } catch (err) {
       console.error("Failed to save selection", err);
@@ -1089,6 +1181,7 @@ function AppContent() {
   const [metrics, setMetrics] = useState<any[]>([]);
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   const [providersInfo, setProvidersInfo] = useState<ProviderInfo[]>([]);
+  const [providerLatencies, setProviderLatencies] = useState<Record<string, { latency: string, status: string }>>({});
   const [namespaces, setNamespaces] = useState<Namespace[]>([]);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
@@ -1103,6 +1196,26 @@ function AppContent() {
       return () => clearInterval(interval);
     }
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated && providers.length > 0) {
+      const fetchLatencies = async () => {
+        const results: Record<string, any> = {};
+        await Promise.all(providers.map(async (p) => {
+          try {
+            const res = await fetchWithAuth(`/api/v1/system/ping/${p.id}`);
+            if (res.ok) results[p.id] = await res.json();
+          } catch (err) {
+            results[p.id] = { latency: 'error', status: 'offline' };
+          }
+        }));
+        setProviderLatencies(prev => ({ ...prev, ...results }));
+      };
+      fetchLatencies();
+      const interval = setInterval(fetchLatencies, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [isAuthenticated, providers.length]);
 
   const fetchData = async () => {
     try {
@@ -1689,7 +1802,7 @@ function AppContent() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-6"
             >
-              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} onManualSync={handleManualSync} />
+              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} onManualSync={handleManualSync} onUpdate={fetchData} />
             </motion.div>
           )}
 
@@ -1732,11 +1845,21 @@ function AppContent() {
                         )}
                       </div>
                       <div className="flex flex-col items-end">
-                        <div className="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-[10px] font-black uppercase tracking-widest rounded-full border border-emerald-500/20 flex items-center gap-1.5">
-                          <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                          Healthy
+                        <div className={cn(
+                          "px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-full border flex items-center gap-1.5",
+                          (providerLatencies[p.id]?.status === 'healthy' || !providerLatencies[p.id]) 
+                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
+                            : "bg-red-500/10 text-red-400 border-red-500/20"
+                        )}>
+                          <div className={cn(
+                            "w-1.5 h-1.5 rounded-full animate-pulse",
+                            (providerLatencies[p.id]?.status === 'healthy' || !providerLatencies[p.id]) ? "bg-emerald-500" : "bg-red-500"
+                          )} />
+                          {providerLatencies[p.id]?.status || 'Checking...'}
                         </div>
-                        <span className="text-[8px] text-slate-600 font-mono mt-1 uppercase tracking-widest">Latency: {Math.floor(Math.random() * 100 + 50)}ms</span>
+                        <span className="text-[8px] text-slate-600 font-mono mt-1 uppercase tracking-widest">
+                          Latency: {providerLatencies[p.id]?.latency || '---'}
+                        </span>
                       </div>
                     </div>
                     <h4 className="text-xl font-black text-white mb-1 tracking-tight relative z-10">{p.name}</h4>
@@ -1821,7 +1944,53 @@ function AppContent() {
                 </div>
               )}
 
-              {isAddingProvider && (
+              {provisioningSummary && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            className="glass-card w-full max-w-2xl p-8 bg-[#0a0f1a] border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)]"
+          >
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-cyan-500/10 rounded-xl flex items-center justify-center">
+                  <CheckCircle2 className="w-6 h-6 text-cyan-400" />
+                </div>
+                <h3 className="text-2xl font-black text-white uppercase tracking-tighter">Provisioning Summary</h3>
+              </div>
+              <button onClick={() => setProvisioningSummary(null)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+                <X className="w-6 h-6 text-slate-500" />
+              </button>
+            </div>
+
+            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+              {provisioningSummary.map((item, idx) => (
+                <div key={idx} className="p-4 rounded-xl bg-white/5 border border-white/5 flex items-center justify-between group hover:border-white/10 transition-all">
+                  <div className="flex items-center gap-4">
+                    <div className={cn(
+                      "w-2 h-2 rounded-full",
+                      item.status === 'created' ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]" :
+                      item.status === 'exists' ? "bg-cyan-500" : "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
+                    )} />
+                    <div>
+                      <p className="text-sm font-black text-white tracking-tight">{item.repo}</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{item.provider} • {item.status}</p>
+                    </div>
+                  </div>
+                  <p className="text-[10px] font-medium text-slate-400 max-w-[200px] text-right">{item.message}</p>
+                </div>
+              ))}
+            </div>
+
+            <button 
+              onClick={() => setProvisioningSummary(null)}
+              className="w-full mt-8 py-4 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-cyan-400 transition-all glow-cyan"
+            >
+              Continue to Dashboard
+            </button>
+          </motion.div>
+        </div>
+      )}
                 <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
                   <motion.div 
                     initial={{ scale: 0.9, opacity: 0, y: 20 }}

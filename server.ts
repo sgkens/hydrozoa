@@ -458,49 +458,92 @@ async function syncCode(source: any, target: any, repoName: string, sourceToken:
 }
 
 async function syncIssues(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
-  const sourceBase = source.url.replace(/\/$/, '');
-  const targetBase = target.url.replace(/\/$/, '');
-  const headersSource: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json' };
-  const headersTarget: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  const sourceBase = source.url.replace(/\/$/, "");
+  const targetBase = target.url.replace(/\/$/, "");
+  const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
+  const headersTarget: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json", "Content-Type": "application/json" };
 
-  if (source.type === 'github') headersSource['Authorization'] = `token ${sourceToken}`;
-  else headersSource['Private-Token'] = sourceToken;
+  const getProviderHeaders = (provider: any, token: string) => {
+    const type = provider.type.toLowerCase();
+    if (type === "github") return { "Authorization": `token ${token}` };
+    if (type.includes("gitlab")) return { "Private-Token": token };
+    if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
+    return {};
+  };
 
-  if (target.type === 'github') headersTarget['Authorization'] = `token ${targetToken}`;
-  else headersTarget['Private-Token'] = targetToken;
+  Object.assign(headersSource, getProviderHeaders(source, sourceToken));
+  Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
   try {
-    let issues = [];
-    if (source.type === 'github') {
-      const res = await fetch(`${sourceBase}/repos/${repoName}/issues?state=all&per_page=100`, { headers: headersSource });
-      if (res.ok) issues = await res.json();
-    } else if (source.type.includes('gitlab')) {
-      const res = await fetch(`${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`, { headers: headersSource });
-      if (res.ok) issues = await res.json();
-    }
+    let sourceIssues = [];
+    const sourcePath = source.type.toLowerCase().includes("gitlab")
+      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
+      : source.type.toLowerCase() === "github"
+        ? `${sourceBase}/repos/${repoName}/issues?state=all&per_page=100`
+        : `${sourceBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
 
-    if (!Array.isArray(issues)) return false;
+    const resSource = await fetch(sourcePath, { headers: headersSource });
+    if (resSource.ok) sourceIssues = await resSource.json();
 
-    for (const issue of issues) {
-      if (issue.pull_request) continue; // Skip PRs on GitHub which are also issues
+    if (!Array.isArray(sourceIssues)) return false;
+
+    let targetIssues = [];
+    const targetPath = target.type.toLowerCase().includes("gitlab")
+      ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
+      : target.type.toLowerCase() === "github"
+        ? `${targetBase}/repos/${repoName}/issues?state=all&per_page=100`
+        : `${targetBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
+
+    const resTarget = await fetch(targetPath, { headers: headersTarget });
+    if (resTarget.ok) targetIssues = await resTarget.json();
+
+    const existingTitles = new Set(targetIssues.map((i: any) => i.title));
+    let created = 0;
+    let skipped = 0;
+
+    for (const issue of sourceIssues) {
+      if (issue.pull_request) continue;
 
       const title = issue.title;
-      const body = source.type === 'github' ? issue.body : issue.description;
+      const body = source.type.toLowerCase() === "github" ? issue.body : (issue.description || issue.body);
 
-      if (target.type.includes('gitlab')) {
-        await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
-          method: 'POST',
-          headers: headersTarget,
-          body: JSON.stringify({ title, description: body })
-        });
-      } else if (target.type === 'github') {
-        await fetch(`${targetBase}/repos/${repoName}/issues`, {
-          method: 'POST',
-          headers: headersTarget,
-          body: JSON.stringify({ title, body })
-        });
+      if (existingTitles.has(title)) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        let createRes;
+        if (target.type.toLowerCase().includes("gitlab")) {
+          createRes = await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, description: body })
+          });
+        } else if (target.type.toLowerCase() === "github") {
+          createRes = await fetch(`${targetBase}/repos/${repoName}/issues`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, body })
+          });
+        } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
+          createRes = await fetch(`${targetBase}/api/v1/repos/${repoName}/issues`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, body })
+          });
+        }
+
+        if (createRes && createRes.ok) {
+          created++;
+        } else {
+          sysLog.warn(`Failed to create issue "${title}" on ${target.name}: ${createRes ? await createRes.text() : "Unknown error"}`);
+        }
+      } catch (e) {
+        sysLog.error(`Error creating issue "${title}" on ${target.name}: ${e}`);
       }
     }
+    sysLog.success(`Issue sync complete for ${repoName}: ${created} created, ${skipped} skipped.`);
     return true;
   } catch (err) {
     sysLog.error(`Issue sync failed for ${repoName}: ${err}`);
@@ -509,99 +552,182 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
 }
 
 async function syncMilestones(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
-  const sourceBase = source.url.replace(/\/$/, '');
-  const targetBase = target.url.replace(/\/$/, '');
-  const headersSource: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json' };
-  const headersTarget: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  const sourceBase = source.url.replace(/\/$/, "");
+  const targetBase = target.url.replace(/\/$/, "");
+  const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
+  const headersTarget: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json", "Content-Type": "application/json" };
 
-  if (source.type === 'github') headersSource['Authorization'] = `token ${sourceToken}`;
-  else headersSource['Private-Token'] = sourceToken;
+  const getProviderHeaders = (provider: any, token: string) => {
+    const type = provider.type.toLowerCase();
+    if (type === "github") return { "Authorization": `token ${token}` };
+    if (type.includes("gitlab")) return { "Private-Token": token };
+    if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
+    return {};
+  };
 
-  if (target.type === 'github') headersTarget['Authorization'] = `token ${targetToken}`;
-  else headersTarget['Private-Token'] = targetToken;
+  Object.assign(headersSource, getProviderHeaders(source, sourceToken));
+  Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
   try {
-    let milestones = [];
-    if (source.type === 'github') {
-      const res = await fetch(`${sourceBase}/repos/${repoName}/milestones?state=all&per_page=100`, { headers: headersSource });
-      if (res.ok) milestones = await res.json();
-    } else if (source.type.includes('gitlab')) {
-      const res = await fetch(`${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`, { headers: headersSource });
-      if (res.ok) milestones = await res.json();
-    }
+    let sourceMilestones = [];
+    const sourcePath = source.type.toLowerCase().includes("gitlab")
+      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
+      : source.type.toLowerCase() === "github"
+        ? `${sourceBase}/repos/${repoName}/milestones?state=all&per_page=100`
+        : `${sourceBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
 
-    if (!Array.isArray(milestones)) return false;
+    const resSource = await fetch(sourcePath, { headers: headersSource });
+    if (resSource.ok) sourceMilestones = await resSource.json();
 
-    for (const ms of milestones) {
+    if (!Array.isArray(sourceMilestones)) return false;
+
+    let targetMilestones = [];
+    const targetPath = target.type.toLowerCase().includes("gitlab")
+      ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
+      : target.type.toLowerCase() === "github"
+        ? `${targetBase}/repos/${repoName}/milestones?state=all&per_page=100`
+        : `${targetBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
+
+    const resTarget = await fetch(targetPath, { headers: headersTarget });
+    if (resTarget.ok) targetMilestones = await resTarget.json();
+
+    const existingTitles = new Set(targetMilestones.map((m: any) => m.title));
+    let created = 0;
+    let skipped = 0;
+
+    for (const ms of sourceMilestones) {
       const title = ms.title;
-      const description = source.type === 'github' ? ms.description : ms.description;
+      const description = ms.description;
 
-      if (target.type.includes('gitlab')) {
-        await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones`, {
-          method: 'POST',
-          headers: headersTarget,
-          body: JSON.stringify({ title, description })
-        });
-      } else if (target.type === 'github') {
-        await fetch(`${targetBase}/repos/${repoName}/milestones`, {
-          method: 'POST',
-          headers: headersTarget,
-          body: JSON.stringify({ title, description })
-        });
+      if (existingTitles.has(title)) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        let createRes;
+        if (target.type.toLowerCase().includes("gitlab")) {
+          createRes = await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, description })
+          });
+        } else if (target.type.toLowerCase() === "github") {
+          createRes = await fetch(`${targetBase}/repos/${repoName}/milestones`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, description })
+          });
+        } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
+          createRes = await fetch(`${targetBase}/api/v1/repos/${repoName}/milestones`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, description })
+          });
+        }
+
+        if (createRes && createRes.ok) {
+          created++;
+        } else {
+          sysLog.warn(`Failed to create milestone "${title}" on ${target.name}: ${createRes ? await createRes.text() : "Unknown error"}`);
+        }
+      } catch (e) {
+        sysLog.error(`Error creating milestone "${title}" on ${target.name}: ${e}`);
       }
     }
+    sysLog.success(`Milestone sync complete for ${repoName}: ${created} created, ${skipped} skipped.`);
     return true;
   } catch (err) {
     sysLog.error(`Milestone sync failed for ${repoName}: ${err}`);
     return false;
   }
 }
-
 async function syncReleases(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
-  const sourceBase = source.url.replace(/\/$/, '');
-  const targetBase = target.url.replace(/\/$/, '');
-  const headersSource: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json' };
-  const headersTarget: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  const sourceBase = source.url.replace(/\/$/, "");
+  const targetBase = target.url.replace(/\/$/, "");
+  const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
+  const headersTarget: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json", "Content-Type": "application/json" };
 
-  if (source.type === 'github') headersSource['Authorization'] = `token ${sourceToken}`;
-  else headersSource['Private-Token'] = sourceToken;
+  const getProviderHeaders = (provider: any, token: string) => {
+    const type = provider.type.toLowerCase();
+    if (type === "github") return { "Authorization": `token ${token}` };
+    if (type.includes("gitlab")) return { "Private-Token": token };
+    if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
+    return {};
+  };
 
-  if (target.type === 'github') headersTarget['Authorization'] = `token ${targetToken}`;
-  else headersTarget['Private-Token'] = targetToken;
+  Object.assign(headersSource, getProviderHeaders(source, sourceToken));
+  Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
   try {
-    // 1. Fetch releases from source
-    let releases = [];
-    if (source.type === 'github') {
-      const res = await fetch(`${sourceBase}/repos/${repoName}/releases`, { headers: headersSource });
-      if (res.ok) releases = await res.json();
-    } else if (source.type.includes('gitlab')) {
-      const res = await fetch(`${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases`, { headers: headersSource });
-      if (res.ok) releases = await res.json();
-    }
+    let sourceReleases = [];
+    const sourcePath = source.type.toLowerCase().includes("gitlab")
+      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases?per_page=100`
+      : source.type.toLowerCase() === "github"
+        ? `${sourceBase}/repos/${repoName}/releases?per_page=100`
+        : `${sourceBase}/api/v1/repos/${repoName}/releases?per_page=100`;
 
-    if (!Array.isArray(releases)) return false;
+    const resSource = await fetch(sourcePath, { headers: headersSource });
+    if (resSource.ok) sourceReleases = await resSource.json();
 
-    // 2. Push to target (simplistic creation if missing)
-    for (const rel of releases) {
-      const tagName = source.type === 'github' ? rel.tag_name : rel.tag_name;
-      const name = source.type === 'github' ? rel.name : rel.name;
-      const body = source.type === 'github' ? rel.body : rel.description;
+    if (!Array.isArray(sourceReleases)) return false;
 
-      if (target.type.includes('gitlab')) {
-        await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases`, {
-          method: 'POST',
-          headers: headersTarget,
-          body: JSON.stringify({ name, tag_name: tagName, description: body })
-        });
-      } else if (target.type === 'github') {
-        await fetch(`${targetBase}/repos/${repoName}/releases`, {
-          method: 'POST',
-          headers: headersTarget,
-          body: JSON.stringify({ name, tag_name: tagName, body })
-        });
+    let targetReleases = [];
+    const targetPath = target.type.toLowerCase().includes("gitlab")
+      ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases?per_page=100`
+      : target.type.toLowerCase() === "github"
+        ? `${targetBase}/repos/${repoName}/releases?per_page=100`
+        : `${targetBase}/api/v1/repos/${repoName}/releases?per_page=100`;
+
+    const resTarget = await fetch(targetPath, { headers: headersTarget });
+    if (resTarget.ok) targetReleases = await resTarget.json();
+
+    const existingTags = new Set(targetReleases.map((r: any) => r.tag_name));
+    let created = 0;
+    let skipped = 0;
+
+    for (const rel of sourceReleases) {
+      const tagName = rel.tag_name;
+      const name = rel.name;
+      const body = source.type.toLowerCase() === "github" ? rel.body : (rel.description || rel.body);
+
+      if (existingTags.has(tagName)) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        let createRes;
+        if (target.type.toLowerCase().includes("gitlab")) {
+          createRes = await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ name, tag_name: tagName, description: body })
+          });
+        } else if (target.type.toLowerCase() === "github") {
+          createRes = await fetch(`${targetBase}/repos/${repoName}/releases`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ name, tag_name: tagName, body })
+          });
+        } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
+          createRes = await fetch(`${targetBase}/api/v1/repos/${repoName}/releases`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ name, tag_name: tagName, body })
+          });
+        }
+
+        if (createRes && createRes.ok) {
+          created++;
+        } else {
+          sysLog.warn(`Failed to create release "${tagName}" on ${target.name}: ${createRes ? await createRes.text() : "Unknown error"}`);
+        }
+      } catch (e) {
+        sysLog.error(`Error creating release "${tagName}" on ${target.name}: ${e}`);
       }
     }
+    sysLog.success(`Release sync complete for ${repoName}: ${created} created, ${skipped} skipped.`);
     return true;
   } catch (err) {
     sysLog.error(`Release sync failed for ${repoName}: ${err}`);
@@ -1186,6 +1312,29 @@ async function startServer() {
     }
   });
 
+  app.get("/api/v1/system/ping/:id", authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    try {
+      const result = await pool.query('SELECT * FROM providers WHERE id = $1', [id]);
+      const provider = result.rows[0];
+      if (!provider) return res.status(404).json({ error: "Provider not found" });
+
+      const start = Date.now();
+      const baseUrl = provider.url.replace(/\/$/, '');
+      
+      // Simple HEAD request to check reachability
+      const pingRes = await fetch(baseUrl, { 
+        method: 'HEAD',
+        headers: { 'User-Agent': 'Hydrozoa-Mirror-Agent' }
+      });
+      
+      const latency = Date.now() - start;
+      res.json({ latency: `${latency}ms`, status: pingRes.ok ? "healthy" : "unstable" });
+    } catch (err) {
+      res.json({ latency: "timeout", status: "offline" });
+    }
+  });
+
   app.get("/api/v1/system/stats", authenticateToken, (req, res) => {
     const memoryUsage = process.memoryUsage();
     const uptime = process.uptime();
@@ -1229,6 +1378,41 @@ async function startServer() {
   app.get("/api/v1/system/sync-matrix", authenticateToken, async (req, res) => {
     const result = await pool.query('SELECT * FROM sync_matrix');
     res.json({ sync_matrix: result.rows });
+  });
+
+  app.patch("/api/v1/system/sync-matrix/:id", authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    const { entities, sync_interval, branch } = req.body;
+    
+    try {
+      const result = await pool.query('SELECT * FROM sync_matrix WHERE id = $1', [id]);
+      const item = result.rows[0];
+      if (!item) return res.status(404).json({ error: "Sync item not found" });
+
+      const updatedEntities = entities || item.entities;
+      const updatedInterval = sync_interval || item.sync_interval;
+      const updatedBranch = branch || item.branch;
+
+      await pool.query(
+        'UPDATE sync_matrix SET entities = $1, sync_interval = $2, branch = $3 WHERE id = $4',
+        [JSON.stringify(updatedEntities), updatedInterval, updatedBranch, id]
+      );
+
+      await addLog({
+        level: "info",
+        code: "H-SYNC-UPDATE",
+        provider: item.source_provider,
+        message: `Updated configuration for ${item.source_repo}`,
+        technical_context: `New Entities: ${JSON.stringify(updatedEntities)}, Interval: ${updatedInterval}m`,
+        ui_message: `Mirror settings updated: ${item.source_repo}`,
+        resolution: "Settings applied to next sync cycle."
+      });
+
+      res.json({ message: "Sync configuration updated" });
+    } catch (err) {
+      sysLog.error(`Failed to update sync matrix: ${err}`);
+      res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   app.post("/api/v1/system/dlq/:id/replay", authenticateToken, async (req, res) => {
