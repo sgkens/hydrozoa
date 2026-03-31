@@ -234,13 +234,13 @@ setInterval(async () => {
       if (changed) {
         await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), item.id]);
       }
-    } catch (err) {
-      sysLog.error(`Sync engine error: ${err}`);
     }
-    }
-    }, 60000); // Run every minute in production
+  } catch (err) {
+    sysLog.error(`Sync engine error: ${err}`);
+  }
+}, 60000); // Run every minute in production
 
-    async function startServer() {
+async function startServer() {
 
   const app = express();
   const PORT = 3000;
