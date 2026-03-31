@@ -201,6 +201,208 @@ function decrypt(encryptedText: string) {
   }
 }
 
+async function getProviderUser(provider: any, token: string): Promise<string | null> {
+  const type = provider.type.toLowerCase();
+  const baseUrl = provider.url.replace(/\/$/, '');
+  const headers: Record<string, string> = {
+    'User-Agent': 'Hydrozoa-Mirror-Agent',
+    'Accept': 'application/json'
+  };
+
+  try {
+    if (type === 'github') {
+      headers['Authorization'] = `token ${token}`;
+      const res = await fetch(`${baseUrl}/user`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        return data.login;
+      }
+    } else if (type.includes('gitlab')) {
+      headers['Private-Token'] = token;
+      const res = await fetch(`${baseUrl}/api/v4/user`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        return data.username;
+      }
+    } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
+      headers['Authorization'] = `token ${token}`;
+      const res = await fetch(`${baseUrl}/api/v1/user`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        return data.username;
+      }
+    } else if (type === 'bitbucket') {
+      headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${baseUrl}/2.0/user`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        return data.nickname || data.username || data.uuid;
+      }
+    }
+  } catch (err) {
+    sysLog.error(`Error fetching user for ${provider.name}: ${err}`);
+  }
+  return null;
+}
+
+async function provisionTargetRepository(provider: any, repoName: string, description: string, token: string) {
+  const type = provider.type.toLowerCase();
+  const baseUrl = provider.url.replace(/\/$/, '');
+  const headers: Record<string, string> = {
+    'User-Agent': 'Hydrozoa-Mirror-Agent',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json'
+  };
+
+  // Step 1: Normalize repo name and find namespace
+  let owner = "";
+  let name = repoName;
+  if (repoName.includes('/')) {
+    const parts = repoName.split('/');
+    name = parts.pop()!;
+    owner = parts.join('/');
+  }
+
+  // If no owner, get default
+  if (!owner) {
+    owner = await getProviderUser(provider, token) || "";
+  }
+  
+  const fullName = owner ? `${owner}/${name}` : name;
+
+  // Logging check
+  await addLog({
+    level: "info",
+    code: "H-TARGET-CHECK",
+    provider: provider.type,
+    message: `Checking if target repository '${fullName}' exists on ${provider.name}`,
+    technical_context: `Verifying existence of ${fullName} via API (Base: ${baseUrl})`,
+    ui_message: `Verifying target repository on ${provider.name}`,
+    resolution: "Automated check initiated."
+  });
+
+  try {
+    let exists = false;
+    if (type === 'github') {
+      headers['Authorization'] = `token ${token}`;
+      const res = await fetch(`${baseUrl}/repos/${fullName}`, { headers });
+      if (res.ok) exists = true;
+      else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
+      else if ([401, 403].includes(res.status)) {
+        return { status: 'failed', message: `Auth error (${res.status}) on ${provider.name}`, error: await res.text() };
+      }
+    } else if (type.includes('gitlab')) {
+      headers['Private-Token'] = token;
+      const res = await fetch(`${baseUrl}/api/v4/projects/${encodeURIComponent(fullName)}`, { headers });
+      if (res.ok) exists = true;
+      else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
+      else if ([401, 403].includes(res.status)) {
+        return { status: 'failed', message: `Auth error (${res.status}) on ${provider.name}`, error: await res.text() };
+      }
+    } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
+      headers['Authorization'] = `token ${token}`;
+      const res = await fetch(`${baseUrl}/api/v1/repos/${fullName}`, { headers });
+      if (res.ok) exists = true;
+      else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
+      else if ([401, 403].includes(res.status)) {
+        return { status: 'failed', message: `Auth error (${res.status}) on ${provider.name}`, error: await res.text() };
+      }
+    } else if (type === 'bitbucket') {
+      headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${baseUrl}/2.0/repositories/${fullName}`, { headers });
+      if (res.ok) exists = true;
+      else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
+      else if ([401, 403].includes(res.status)) {
+        return { status: 'failed', message: `Auth error (${res.status}) on ${provider.name}`, error: await res.text() };
+      }
+    }
+
+    if (exists) {
+      await addLog({
+        level: "info",
+        code: "H-TARGET-EXISTS",
+        provider: provider.type,
+        message: `Target repository '${fullName}' already exists on ${provider.name}`,
+        technical_context: `Target verified: ${fullName}`,
+        ui_message: `Target repository verified: ${fullName}`,
+        resolution: "No creation required."
+      });
+      return { status: 'exists', message: `Repository ${fullName} already exists` };
+    }
+
+    // Step 2: Create
+    await addLog({
+      level: "info",
+      code: "H-TARGET-CREATE",
+      provider: provider.type,
+      message: `Creating target repository '${fullName}' on ${provider.name}`,
+      technical_context: `Triggering repository creation for ${fullName}`,
+      ui_message: `Provisioning target repository: ${fullName}`,
+      resolution: "Repository was missing and is being automatically provisioned."
+    });
+
+    let createRes;
+    if (type === 'github') {
+      const currentUser = await getProviderUser(provider, token);
+      const createUrl = owner === currentUser ? `${baseUrl}/user/repos` : `${baseUrl}/orgs/${owner}/repos`;
+      createRes = await fetch(createUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name, description, private: true })
+      });
+    } else if (type.includes('gitlab')) {
+      createRes = await fetch(`${baseUrl}/api/v4/projects`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name, path: name, visibility: 'private', description })
+      });
+    } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
+      const currentUser = await getProviderUser(provider, token);
+      const createUrl = owner === currentUser ? `${baseUrl}/api/v1/user/repos` : `${baseUrl}/api/v1/org/${owner}/repos`;
+      createRes = await fetch(createUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name, description, private: true })
+      });
+    } else if (type === 'bitbucket') {
+      createRes = await fetch(`${baseUrl}/2.0/repositories/${fullName}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ scm: 'git', is_private: true, description })
+      });
+    }
+
+    if (createRes && createRes.ok) {
+      await addLog({
+        level: "info",
+        code: "H-TARGET-SUCCESS",
+        provider: provider.type,
+        message: `Successfully created target repository '${fullName}' on ${provider.name}`,
+        technical_context: `Creation successful for ${fullName}`,
+        ui_message: `Provisioned repository: ${fullName}`,
+        resolution: "Repository is now ready for mirroring."
+      });
+      return { status: 'created', message: `Repository ${fullName} created` };
+    } else {
+      const errText = createRes ? await createRes.text() : "Unknown error";
+      await addLog({
+        level: "error",
+        code: "H-TARGET-FAIL",
+        provider: provider.type,
+        message: `Failed to create target repository '${fullName}' on ${provider.name}`,
+        technical_context: `API error: ${errText}`,
+        ui_message: `Failed to provision repository: ${fullName}`,
+        resolution: "Check provider permissions and quota."
+      });
+      return { status: 'failed', message: `Failed to create repository ${fullName}`, error: errText };
+    }
+
+  } catch (err: any) {
+    sysLog.error(`Provisioning error: ${err.message}`);
+    return { status: 'failed', message: `Unexpected error during provisioning`, error: err.message };
+  }
+}
+
 // JWT Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
   const authHeader = req.headers['authorization'];
@@ -644,21 +846,13 @@ async function startServer() {
     };
 
     try {
-      if (pool) {
-        if (provider.isSource) {
-          await pool.query('UPDATE providers SET is_source = false');
-        }
-        await pool.query(
-          'INSERT INTO providers (id, name, type, url, token, is_source) VALUES ($1, $2, $3, $4, $5, $6)',
-          [id, name, type, provider.url, encryptedToken, provider.isSource]
-        );
-      } else {
-        // If this is set as source, unset others
-        if (provider.isSource) {
-          providers.forEach(p => p.isSource = false);
-        }
-        providers.push({ ...provider, token: encryptedToken });
+      if (provider.isSource) {
+        await pool.query('UPDATE providers SET is_source = false');
       }
+      await pool.query(
+        'INSERT INTO providers (id, name, type, url, token, is_source) VALUES ($1, $2, $3, $4, $5, $6)',
+        [id, name, type, provider.url, encryptedToken, provider.isSource]
+      );
 
       await addLog({
         level: "info",
@@ -813,51 +1007,43 @@ async function startServer() {
     
     // Automation logic for target repository creation
     const selectedRepoDetails = selectedRepos.map((repo: any) => {
-      return { 
-        id: repo.id, 
-        name: repo.name, 
-        description: repo.description || "Automated mirror target", 
-        tags: repo.tags || ["hydrozoa", "mirror"] 
+      return {
+        id: repo.id,
+        name: repo.name,
+        description: repo.description || "Automated mirror target",
+        tags: repo.tags || ["hydrozoa", "mirror"]
       };
     });
+
+    const sourceProviderRes = await pool.query('SELECT * FROM providers WHERE is_source = true');
+    const sourceProvider = sourceProviderRes.rows[0];
+    const sourceProviderId = sourceProvider ? sourceProvider.id : 'unknown';
+
+    const provisionSummary = [];
 
     for (const providerId of targetProviderIds) {
       const result = await pool.query('SELECT * FROM providers WHERE id = $1', [providerId]);
       const provider = result.rows[0];
-      
+
       if (!provider) continue;
 
+      const decryptedToken = decrypt(provider.token);
+
       for (const repo of selectedRepoDetails) {
-        // Log the check interaction
-        await addLog({
-          level: "info",
-          code: "H-TARGET-CHECK",
-          provider: provider.type,
-          message: `Checking if target repository '${repo.name}' exists on ${provider.name}`,
-          technical_context: `GET ${provider.url}/api/v1/repos/${repo.name}`,
-          ui_message: `Verifying target repository on ${provider.name}`,
-          resolution: "Automated check initiated by Hydrozoa."
+        const provisionResult = await provisionTargetRepository(provider, repo.name, repo.description, decryptedToken);
+
+        provisionSummary.push({
+          provider: provider.name,
+          repo: repo.name,
+          status: provisionResult.status,
+          message: provisionResult.message
         });
 
-        // In production, this would call the target provider's API
-        // For now, we assume it needs creation unless we implement the check
-        const exists = false; 
-        
-        if (!exists) {
-          await addLog({
-            level: "info",
-            code: "H-TARGET-CREATE",
-            provider: provider.type,
-            message: `Creating target repository '${repo.name}' on ${provider.name}`,
-            technical_context: `POST ${provider.url}/api/v1/repos { name: "${repo.name}", description: "${repo.description}", tags: ${JSON.stringify(repo.tags)} }`,
-            ui_message: `Created missing target repository: ${repo.name}`,
-            resolution: "Repository was missing and has been automatically provisioned with metadata."
-          });
-
+        if (provisionResult.status !== 'failed') {
           // Add to sync matrix if not already there
           const existingSyncRes = await pool.query('SELECT * FROM sync_matrix WHERE source_repo = $1', [repo.name]);
           const existingSync = existingSyncRes.rows[0];
-          
+
           if (existingSync) {
             const targets = existingSync.targets;
             if (!targets.find((t: any) => t.provider_id === providerId)) {
@@ -874,7 +1060,7 @@ async function startServer() {
             const newSync = {
               id: `sm-${crypto.randomUUID().slice(0, 8)}`,
               source_repo: repo.name,
-              source_provider: "p1",
+              source_provider: sourceProviderId,
               branch: "main",
               last_commit: "initial",
               sync_interval: 15,
@@ -894,21 +1080,15 @@ async function startServer() {
               [newSync.id, newSync.source_repo, newSync.source_provider, newSync.branch, newSync.last_commit, newSync.sync_interval, newSync.last_sync_duration, newSync.success_rate, JSON.stringify(newSync.targets), JSON.stringify(newSync.entities)]
             );
           }
-        } else {
-          await addLog({
-            level: "info",
-            code: "H-TARGET-EXISTS",
-            provider: provider.type,
-            message: `Target repository '${repo.name}' already exists on ${provider.name}`,
-            technical_context: `Target verified: ${repo.name}`,
-            ui_message: `Target repository verified: ${repo.name}`,
-            resolution: "No creation required."
-          });
         }
       }
     }
 
-    res.json({ message: "Selection saved and targets provisioned", count: selectedRepos.length });
+    res.json({ 
+      message: "Selection saved and targets provisioned", 
+      count: selectedRepos.length,
+      summary: provisionSummary
+    });
   });
 
   // Analytics endpoint for ApexCharts
