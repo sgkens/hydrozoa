@@ -775,6 +775,9 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
 const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>> }) => {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
   const [repos, setRepos] = useState<Record<string, Repository[]>>({});
+  const [repoPages, setRepoPages] = useState<Record<string, number>>({});
+  const [hasMoreRepos, setHasMoreRepos] = useState<Record<string, boolean>>({});
+  const [isLoadingRepos, setIsLoadingRepos] = useState<Record<string, boolean>>({});
   const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
   const [selectedNamespaces, setSelectedNamespaces] = useState<Set<string>>(new Set());
   const [selectedTargetProviders, setSelectedTargetProviders] = useState<Set<string>>(new Set());
@@ -811,22 +814,41 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
     }
   }, [sourceProvider, namespaces.length]);
 
+  const fetchReposPage = async (nsId: string, page: number) => {
+    setIsLoadingRepos(prev => ({ ...prev, [nsId]: true }));
+    try {
+      const perPage = 50;
+      const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?page=${page}&per_page=${perPage}`);
+      const data = await res.json();
+      const newRepos = Array.isArray(data) ? data : [];
+      
+      setRepos(prev => ({ 
+        ...prev, 
+        [nsId]: page === 1 ? newRepos : [...(prev[nsId] || []), ...newRepos] 
+      }));
+      setHasMoreRepos(prev => ({ ...prev, [nsId]: newRepos.length === perPage }));
+      setRepoPages(prev => ({ ...prev, [nsId]: page }));
+    } catch (err) {
+      console.error("Failed to fetch repos", err);
+    } finally {
+      setIsLoadingRepos(prev => ({ ...prev, [nsId]: false }));
+    }
+  };
+
   const toggleNamespace = async (nsId: string) => {
     if (expandedNamespace === nsId) {
       setExpandedNamespace(null);
     } else {
       setExpandedNamespace(nsId);
       if (!repos[nsId]) {
-        try {
-          const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos`);
-          const data = await res.json();
-          setRepos(prev => ({ ...prev, [nsId]: Array.isArray(data) ? data : [] }));
-        } catch (err) {
-          console.error("Failed to fetch repos", err);
-          setRepos(prev => ({ ...prev, [nsId]: [] }));
-        }
+        await fetchReposPage(nsId, 1);
       }
     }
+  };
+
+  const handleLoadMore = (e: React.MouseEvent, nsId: string) => {
+    e.stopPropagation();
+    fetchReposPage(nsId, (repoPages[nsId] || 1) + 1);
   };
 
   const handleNamespaceCheck = async (nsId: string) => {
@@ -1136,6 +1158,21 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
                         </div>
                       </div>
                     ))}
+                    
+                    {hasMoreRepos[ns.id] && (
+                      <button 
+                        onClick={(e) => handleLoadMore(e, ns.id)}
+                        disabled={isLoadingRepos[ns.id]}
+                        className="w-full py-3 mt-2 border border-dashed border-white/10 rounded-lg text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] hover:bg-white/5 hover:text-cyan-400 transition-all flex items-center justify-center gap-2"
+                      >
+                        {isLoadingRepos[ns.id] ? (
+                          <div className="w-3 h-3 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Plus className="w-3 h-3" />
+                        )}
+                        {isLoadingRepos[ns.id] ? "Requesting more nodes..." : "Load More Repositories"}
+                      </button>
+                    )}
                     {!repos[ns.id] && (
                       <div className="flex justify-center py-4">
                         <RefreshCw className="w-5 h-5 text-cyan-400 animate-spin" />
@@ -2026,6 +2063,10 @@ function AppContent() {
                       <div>
                         <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Personal Access Token</label>
                         <input name="token" type="password" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="glpat-xxxxxxxxxxxxxxx" />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Webhook Secret (Optional)</label>
+                        <input name="webhookSecret" type="password" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="Secret for HMAC verification" />
                       </div>
                       <div className="flex gap-4 pt-6">
                         <button type="button" onClick={() => setIsAddingProvider(false)} className="flex-1 px-6 py-3 glass-card hover:bg-white/10 text-xs font-black uppercase tracking-widest text-white transition-all">Cancel</button>

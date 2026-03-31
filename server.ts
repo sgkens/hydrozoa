@@ -88,6 +88,7 @@ async function initDb() {
         type TEXT NOT NULL,
         url TEXT NOT NULL,
         token TEXT NOT NULL,
+        webhook_secret TEXT,
         is_source BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
@@ -97,6 +98,9 @@ async function initDb() {
       BEGIN 
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='providers' AND column_name='is_source') THEN
           ALTER TABLE providers ADD COLUMN is_source BOOLEAN DEFAULT FALSE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='providers' AND column_name='webhook_secret') THEN
+          ALTER TABLE providers ADD COLUMN webhook_secret TEXT;
         END IF;
       END $$;
 
@@ -1103,6 +1107,9 @@ async function startServer() {
 
   app.get("/api/v1/source/namespaces/:id/repos", authenticateToken, async (req, res) => {
     const { id } = req.params;
+    const page = parseInt(req.query.page as string) || 1;
+    const perPage = parseInt(req.query.per_page as string) || 100;
+    
     const result = await pool.query('SELECT * FROM providers WHERE is_source = true');
     const sourceProvider = result.rows[0];
 
@@ -1118,7 +1125,7 @@ async function startServer() {
       
       if (sourceProvider.type === 'github') {
         headers['Authorization'] = `token ${token}`;
-        const url = `https://api.github.com/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=100`;
+        const url = `https://api.github.com/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=${perPage}&page=${page}`;
         sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
 
         const reposRes = await fetch(url, { headers });
@@ -1143,8 +1150,8 @@ async function startServer() {
       if (sourceProvider.type.includes('gitlab')) {
         headers['Private-Token'] = token;
         const url = id.startsWith('group-') 
-          ? `${baseUrl}/api/v4/groups/${id.replace('group-', '')}/projects?per_page=100`
-          : `${baseUrl}/api/v4/projects?owned=true&per_page=100`;
+          ? `${baseUrl}/api/v4/groups/${id.replace('group-', '')}/projects?per_page=${perPage}&page=${page}`
+          : `${baseUrl}/api/v4/projects?owned=true&per_page=${perPage}&page=${page}`;
         
         sysLog.info(`Fetching GitLab projects for ${id} from ${url}`);
 
@@ -1169,13 +1176,13 @@ async function startServer() {
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
         // We try organization repos first, then fall back to user repos if needed
-        let url = `${baseUrl}/api/v1/orgs/${id}/repos?per_page=100`;
+        let url = `${baseUrl}/api/v1/orgs/${id}/repos?limit=${perPage}&page=${page}`;
         sysLog.info(`Fetching ${sourceProvider.type} repos for ${id} from ${url}`);
         let reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         
         if (!reposRes.ok) {
           // Fallback to user repos if org repos fail
-          url = `${baseUrl}/api/v1/user/repos?per_page=100`;
+          url = `${baseUrl}/api/v1/user/repos?limit=${perPage}&page=${page}`;
           sysLog.info(`Falling back to ${sourceProvider.type} user repos for ${id} from ${url}`);
           reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         }
@@ -1194,7 +1201,7 @@ async function startServer() {
       }
 
       if (sourceProvider.type === 'bitbucket') {
-        const url = `https://api.bitbucket.org/2.0/repositories/${id}?per_page=100`;
+        const url = `https://api.bitbucket.org/2.0/repositories/${id}?pagelen=${perPage}&page=${page}`;
         sysLog.info(`Fetching Bitbucket repos for ${id} from ${url}`);
         const reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `Bearer ${token}` } });
         if (!reposRes.ok) {
@@ -1218,7 +1225,7 @@ async function startServer() {
   });
 
   app.post("/api/v1/auth/providers", authenticateToken, async (req, res) => {
-    let { name, type, url, token, isSource, baseUrl } = req.body;
+    let { name, type, url, token, isSource, baseUrl, webhookSecret } = req.body;
     
     // Support both 'url' and 'baseUrl' (frontend uses baseUrl)
     const effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : null);
@@ -1229,6 +1236,7 @@ async function startServer() {
     }
 
     const encryptedToken = encrypt(token);
+    const encryptedWebhookSecret = webhookSecret ? encrypt(webhookSecret) : null;
     const id = crypto.randomUUID();
     
     const provider = {
@@ -1237,6 +1245,7 @@ async function startServer() {
       type,
       url: effectiveUrl,
       isSource: isSource || false,
+      webhookSecret: webhookSecret ? "****" : null,
       token: "glpat-****" // Masked for UI
     };
 
@@ -1245,8 +1254,8 @@ async function startServer() {
         await pool.query('UPDATE providers SET is_source = false');
       }
       await pool.query(
-        'INSERT INTO providers (id, name, type, url, token, is_source) VALUES ($1, $2, $3, $4, $5, $6)',
-        [id, name, type, provider.url, encryptedToken, provider.isSource]
+        'INSERT INTO providers (id, name, type, url, token, is_source, webhook_secret) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [id, name, type, provider.url, encryptedToken, provider.isSource, encryptedWebhookSecret]
       );
 
       await addLog({
@@ -1275,8 +1284,58 @@ async function startServer() {
     sysLog.info(`Incoming webhook for ${providerId}`);
     
     try {
-      // In production, we'd verify HMAC signature here
-      // For now, we trigger sync for all matrix items using this provider as source
+      const result = await pool.query('SELECT * FROM providers WHERE id = $1', [providerId]);
+      const provider = result.rows[0];
+      if (!provider) return res.status(404).json({ error: "Provider not found" });
+
+      // Verify HMAC if secret is configured
+      if (provider.webhook_secret) {
+        const secret = decrypt(provider.webhook_secret);
+        const type = provider.type.toLowerCase();
+
+        if (type === 'github') {
+          const signature = req.headers['x-hub-signature-256'];
+          if (!signature) {
+            sysLog.warn(`Missing signature for GitHub webhook on ${provider.name}`);
+            return res.status(401).json({ error: "Missing signature" });
+          }
+          const hmac = crypto.createHmac('sha256', secret);
+          const digest = 'sha256=' + hmac.update(JSON.stringify(req.body)).digest('hex');
+          if (signature !== digest) {
+            sysLog.error(`Invalid HMAC signature for ${provider.name}`);
+            return res.status(401).json({ error: "Invalid signature" });
+          }
+        } else if (type.includes('gitlab')) {
+          const token = req.headers['x-gitlab-token'];
+          if (token !== secret) {
+            sysLog.error(`Invalid GitLab token for ${provider.name}`);
+            return res.status(401).json({ error: "Invalid token" });
+          }
+        } else if (['gitea', 'forgejo'].includes(type)) {
+          const signature = req.headers['x-gitea-signature'];
+          if (!signature) {
+            sysLog.warn(`Missing signature for Gitea/Forgejo webhook on ${provider.name}`);
+            return res.status(401).json({ error: "Missing signature" });
+          }
+          const hmac = crypto.createHmac('sha256', secret);
+          const digest = hmac.update(JSON.stringify(req.body)).digest('hex');
+          if (signature !== digest) {
+            sysLog.error(`Invalid Gitea/Forgejo HMAC signature for ${provider.name}`);
+            return res.status(401).json({ error: "Invalid signature" });
+          }
+        } else if (type === 'bitbucket') {
+          // Bitbucket uses a secret token if configured in some versions, or just IP whitelisting.
+          // We'll implement a simple header check if secret is provided.
+          const token = req.headers['x-hook-secret'];
+          if (token && token !== secret) {
+            sysLog.error(`Invalid Bitbucket hook secret for ${provider.name}`);
+            return res.status(401).json({ error: "Invalid secret" });
+          }
+        }
+        // Add more providers as needed
+      }
+
+      // Trigger sync for all matrix items using this provider as source
       const matrixRes = await pool.query('SELECT * FROM sync_matrix WHERE source_provider = $1', [providerId]);
       
       for (const item of matrixRes.rows) {

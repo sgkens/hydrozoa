@@ -13,13 +13,14 @@
 - [x] **Styled Console**: Professional ANSI output with ASCII header.
 - [x] **Real Analytics**: Database-driven metrics for sync performance.
 - [x] **Health Checks**: `/health` endpoint for monitoring.
+- [x] **Pagination Support**: Handle large repository collections in UI and Backend.
+- [x] **Improved Automation**:
+    - [x] HMAC verification for incoming webhooks (GitHub, GitLab, Gitea, Forgejo, Bitbucket).
+    - [x] Automatic sync on webhook trigger.
 - [x] **UI Refinements**:
     - [x] Provisioning summary modal after source selection.
     - [x] Edit sync entities from the Sync Matrix tab.
     - [x] Real latency monitoring for providers.
-- [ ] **Improved Automation**:
-    - [ ] HMAC verification for incoming webhooks.
-    - [ ] Automatic sync on webhook trigger (Partial: Trigger logic exists, needs HMAC).
 
 ### **Bug Fixes**
 - [x] Fix `DATABASE_URL` parsing with special characters.
@@ -33,4 +34,3 @@
 - [ ] Bidirectional sync conflict resolution UI.
 - [ ] OIDC / OAuth2 integration for admin login.
 - [ ] Worker node distribution (scaling).
-- [ ] Pagination support for large repository collections.
