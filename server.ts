@@ -667,6 +667,16 @@ async function processSyncItem(item: any) {
       await pool.query('INSERT INTO dlq_items (id, source_repo, target_node, error_code, error_message) VALUES ($1, $2, $3, $4, $5)',
         [crypto.randomUUID(), item.source_repo, targetProvider.name, 'SYNC_FAIL', err.message]);
         
+      await addLog({
+        level: "error",
+        code: "H-SYNC-FAIL",
+        provider: targetProvider.type,
+        message: `Sync failed for ${item.source_repo} -> ${targetProvider.name}`,
+        technical_context: err.message,
+        ui_message: `Mirroring failed: ${item.source_repo}`,
+        resolution: "Check DLQ for details and trigger manual replay."
+      });
+
       sysLog.error(`Sync failed for ${item.source_repo} -> ${targetProvider.name}: ${err.message}`);
     }
 
@@ -692,6 +702,21 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  app.get("/health", async (req, res) => {
+    try {
+      await pool.query('SELECT 1');
+      const gitVersion = (await execAsync('git --version')).stdout.trim();
+      res.json({ 
+        status: "UP", 
+        database: "connected", 
+        git: gitVersion,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      res.status(503).json({ status: "DOWN", error: err.message });
+    }
+  });
 
   // API Routes
   app.post("/api/v1/auth/login", async (req, res) => {
@@ -1119,10 +1144,24 @@ async function startServer() {
     }
   });
 
-  app.post("/api/v1/webhooks/incoming/:providerId", (req, res) => {
-    // In a real app, we'd verify HMAC signature here
-    sysLog.info(`Incoming webhook for ${req.params.providerId}`);
-    res.status(202).json({ message: "Accepted" });
+  app.post("/api/v1/webhooks/incoming/:providerId", async (req, res) => {
+    const { providerId } = req.params;
+    sysLog.info(`Incoming webhook for ${providerId}`);
+    
+    try {
+      // In production, we'd verify HMAC signature here
+      // For now, we trigger sync for all matrix items using this provider as source
+      const matrixRes = await pool.query('SELECT * FROM sync_matrix WHERE source_provider = $1', [providerId]);
+      
+      for (const item of matrixRes.rows) {
+        processSyncItem(item).catch(err => sysLog.error(`Webhook-triggered sync failed for ${item.source_repo}: ${err}`));
+      }
+
+      res.status(202).json({ message: "Sync triggered" });
+    } catch (err) {
+      sysLog.error(`Webhook handler failed: ${err}`);
+      res.status(500).json({ error: "Webhook handler failed" });
+    }
   });
 
   app.delete("/api/v1/auth/providers/:id", authenticateToken, async (req, res) => {
@@ -1338,13 +1377,38 @@ async function startServer() {
 
   // Analytics endpoint for ApexCharts
   app.get("/api/v1/analytics/sync-metrics", authenticateToken, async (req, res) => {
-    // In production, we'd query real metrics from a table
-    // For now, return a flat baseline if no real data exists
-    const data = Array.from({ length: 24 }, (_, i) => ({
-      x: new Date(Date.now() - (23 - i) * 3600000).toISOString(),
-      y: 0
-    }));
-    res.json(data);
+    try {
+      // Query successful syncs over the last 24 hours, grouped by hour
+      const result = await pool.query(`
+        SELECT 
+          date_trunc('hour', timestamp) as hour,
+          count(*) as count
+        FROM logs 
+        WHERE code = 'H-SYNC-OK' 
+          AND timestamp > NOW() - INTERVAL '24 hours'
+        GROUP BY hour
+        ORDER BY hour ASC
+      `);
+
+      // Fill in gaps for hours with no data
+      const dataMap = new Map(result.rows.map(r => [new Date(r.hour).getTime(), parseInt(r.count)]));
+      const data = [];
+      const now = new Date();
+      now.setMinutes(0, 0, 0);
+
+      for (let i = 23; i >= 0; i--) {
+        const hour = new Date(now.getTime() - i * 3600000);
+        data.push({
+          x: hour.toISOString(),
+          y: dataMap.get(hour.getTime()) || 0
+        });
+      }
+
+      res.json(data);
+    } catch (err) {
+      sysLog.error(`Failed to fetch analytics: ${err}`);
+      res.status(500).json({ error: "Failed to fetch analytics" });
+    }
   });
 
   app.post("/api/v1/sync/manual/:id", authenticateToken, async (req, res) => {
