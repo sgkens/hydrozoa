@@ -689,6 +689,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
   const [selectedNamespaces, setSelectedNamespaces] = useState<Set<string>>(new Set());
   const [selectedTargetProviders, setSelectedTargetProviders] = useState<Set<string>>(new Set());
   const [syncEntities, setSyncEntities] = useState<string[]>(["code"]);
+  const [repoEntities, setRepoEntities] = useState<Record<string, string[]>>({});
 
   const [isSaving, setIsSaving] = useState(false);
 
@@ -696,6 +697,16 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
     setSyncEntities(prev => 
       prev.includes(entity) ? prev.filter(e => e !== entity) : [...prev, entity]
     );
+  };
+
+  const toggleRepoEntity = (repoId: string, entity: string) => {
+    setRepoEntities(prev => {
+      const current = prev[repoId] || syncEntities;
+      const updated = current.includes(entity) 
+        ? current.filter(e => e !== entity) 
+        : [...current, entity];
+      return { ...prev, [repoId]: updated };
+    });
   };
 
   const sourceProvider = providers.find(p => p.isSource);
@@ -814,9 +825,12 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
       const res = await fetchWithAuth('/api/v1/source/selection', {
         method: 'POST',
         body: JSON.stringify({ 
-          selectedRepos: selectedRepoObjects,
+          selectedRepos: selectedRepoObjects.map(r => ({
+            ...r,
+            entities: repoEntities[r.id] || syncEntities
+          })),
           targetProviderIds: Array.from(selectedTargetProviders),
-          entities: syncEntities
+          entities: syncEntities // Global default
         })
       });
       if (res.ok) {
@@ -1001,7 +1015,28 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
                           </button>
                           <div>
                             <p className="text-sm font-bold text-slate-300 group-hover:text-white transition-colors">{repo.name}</p>
-                            <p className="text-[10px] text-slate-600 font-medium">{repo.description}</p>
+                            <div className="flex gap-2 items-center mt-1">
+                              {selectedRepos.has(repo.id) ? (
+                                <div className="flex gap-1">
+                                  {['code', 'issues', 'milestones', 'releases'].map(ent => (
+                                    <button
+                                      key={ent}
+                                      onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
+                                      className={cn(
+                                        "px-1.5 py-0.5 rounded-[4px] text-[7px] font-black uppercase tracking-tighter border transition-all",
+                                        (repoEntities[repo.id] || syncEntities).includes(ent)
+                                          ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
+                                          : "bg-white/5 border-white/10 text-slate-600 hover:border-white/20"
+                                      )}
+                                    >
+                                      {ent}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-[10px] text-slate-600 font-medium">{repo.description}</p>
+                              )}
+                            </div>
                           </div>
                         </div>
                         <div className="text-[10px] font-black text-slate-700 uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">

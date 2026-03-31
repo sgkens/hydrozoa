@@ -8,7 +8,12 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import pg from "pg";
+import { exec } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+import os from "os";
 
+const execAsync = promisify(exec);
 const { Pool } = pg;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -417,30 +422,269 @@ const authenticateToken = (req: any, res: any, next: any) => {
   });
 };
 
-// Mock Sync Engine (Background tasks)
+// --- Sync Engine ---
+
+async function getAuthUrl(provider: any, token: string, repoName: string) {
+  const type = provider.type.toLowerCase();
+  const baseUrl = provider.url.replace(/\/$/, '').replace(/^https?:\/\//, '');
+  
+  if (type === 'github') return `https://x-access-token:${token}@${baseUrl}/${repoName}.git`;
+  if (type.includes('gitlab')) return `https://oauth2:${token}@${baseUrl}/${repoName}.git`;
+  if (type === 'bitbucket') return `https://x-token-auth:${token}@${baseUrl}/${repoName}.git`;
+  // Default for Gitea/Forgejo/Gogs
+  return `https://${token}@${baseUrl}/${repoName}.git`;
+}
+
+async function syncCode(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+  const tmpDir = path.join(os.tmpdir(), `hydrozoa-${crypto.randomUUID()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  try {
+    const sourceUrl = await getAuthUrl(source, sourceToken, repoName);
+    const targetUrl = await getAuthUrl(target, targetToken, repoName);
+
+    sysLog.info(`Mirroring code: ${repoName} -> ${target.name}`);
+    
+    await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`);
+    await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`);
+    
+    return true;
+  } catch (err: any) {
+    sysLog.error(`Code sync failed for ${repoName}: ${err.message}`);
+    throw err;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function syncIssues(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+  const sourceBase = source.url.replace(/\/$/, '');
+  const targetBase = target.url.replace(/\/$/, '');
+  const headersSource: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json' };
+  const headersTarget: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json', 'Content-Type': 'application/json' };
+
+  if (source.type === 'github') headersSource['Authorization'] = `token ${sourceToken}`;
+  else headersSource['Private-Token'] = sourceToken;
+
+  if (target.type === 'github') headersTarget['Authorization'] = `token ${targetToken}`;
+  else headersTarget['Private-Token'] = targetToken;
+
+  try {
+    let issues = [];
+    if (source.type === 'github') {
+      const res = await fetch(`${sourceBase}/repos/${repoName}/issues?state=all&per_page=100`, { headers: headersSource });
+      if (res.ok) issues = await res.json();
+    } else if (source.type.includes('gitlab')) {
+      const res = await fetch(`${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`, { headers: headersSource });
+      if (res.ok) issues = await res.json();
+    }
+
+    if (!Array.isArray(issues)) return false;
+
+    for (const issue of issues) {
+      if (issue.pull_request) continue; // Skip PRs on GitHub which are also issues
+
+      const title = issue.title;
+      const body = source.type === 'github' ? issue.body : issue.description;
+
+      if (target.type.includes('gitlab')) {
+        await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
+          method: 'POST',
+          headers: headersTarget,
+          body: JSON.stringify({ title, description: body })
+        });
+      } else if (target.type === 'github') {
+        await fetch(`${targetBase}/repos/${repoName}/issues`, {
+          method: 'POST',
+          headers: headersTarget,
+          body: JSON.stringify({ title, body })
+        });
+      }
+    }
+    return true;
+  } catch (err) {
+    sysLog.error(`Issue sync failed for ${repoName}: ${err}`);
+    return false;
+  }
+}
+
+async function syncMilestones(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+  const sourceBase = source.url.replace(/\/$/, '');
+  const targetBase = target.url.replace(/\/$/, '');
+  const headersSource: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json' };
+  const headersTarget: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json', 'Content-Type': 'application/json' };
+
+  if (source.type === 'github') headersSource['Authorization'] = `token ${sourceToken}`;
+  else headersSource['Private-Token'] = sourceToken;
+
+  if (target.type === 'github') headersTarget['Authorization'] = `token ${targetToken}`;
+  else headersTarget['Private-Token'] = targetToken;
+
+  try {
+    let milestones = [];
+    if (source.type === 'github') {
+      const res = await fetch(`${sourceBase}/repos/${repoName}/milestones?state=all&per_page=100`, { headers: headersSource });
+      if (res.ok) milestones = await res.json();
+    } else if (source.type.includes('gitlab')) {
+      const res = await fetch(`${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`, { headers: headersSource });
+      if (res.ok) milestones = await res.json();
+    }
+
+    if (!Array.isArray(milestones)) return false;
+
+    for (const ms of milestones) {
+      const title = ms.title;
+      const description = source.type === 'github' ? ms.description : ms.description;
+
+      if (target.type.includes('gitlab')) {
+        await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones`, {
+          method: 'POST',
+          headers: headersTarget,
+          body: JSON.stringify({ title, description })
+        });
+      } else if (target.type === 'github') {
+        await fetch(`${targetBase}/repos/${repoName}/milestones`, {
+          method: 'POST',
+          headers: headersTarget,
+          body: JSON.stringify({ title, description })
+        });
+      }
+    }
+    return true;
+  } catch (err) {
+    sysLog.error(`Milestone sync failed for ${repoName}: ${err}`);
+    return false;
+  }
+}
+
+async function syncReleases(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+  const sourceBase = source.url.replace(/\/$/, '');
+  const targetBase = target.url.replace(/\/$/, '');
+  const headersSource: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json' };
+  const headersTarget: any = { 'User-Agent': 'Hydrozoa-Mirror-Agent', 'Accept': 'application/json', 'Content-Type': 'application/json' };
+
+  if (source.type === 'github') headersSource['Authorization'] = `token ${sourceToken}`;
+  else headersSource['Private-Token'] = sourceToken;
+
+  if (target.type === 'github') headersTarget['Authorization'] = `token ${targetToken}`;
+  else headersTarget['Private-Token'] = targetToken;
+
+  try {
+    // 1. Fetch releases from source
+    let releases = [];
+    if (source.type === 'github') {
+      const res = await fetch(`${sourceBase}/repos/${repoName}/releases`, { headers: headersSource });
+      if (res.ok) releases = await res.json();
+    } else if (source.type.includes('gitlab')) {
+      const res = await fetch(`${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases`, { headers: headersSource });
+      if (res.ok) releases = await res.json();
+    }
+
+    if (!Array.isArray(releases)) return false;
+
+    // 2. Push to target (simplistic creation if missing)
+    for (const rel of releases) {
+      const tagName = source.type === 'github' ? rel.tag_name : rel.tag_name;
+      const name = source.type === 'github' ? rel.name : rel.name;
+      const body = source.type === 'github' ? rel.body : rel.description;
+
+      if (target.type.includes('gitlab')) {
+        await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases`, {
+          method: 'POST',
+          headers: headersTarget,
+          body: JSON.stringify({ name, tag_name: tagName, description: body })
+        });
+      } else if (target.type === 'github') {
+        await fetch(`${targetBase}/repos/${repoName}/releases`, {
+          method: 'POST',
+          headers: headersTarget,
+          body: JSON.stringify({ name, tag_name: tagName, body })
+        });
+      }
+    }
+    return true;
+  } catch (err) {
+    sysLog.error(`Release sync failed for ${repoName}: ${err}`);
+    return false;
+  }
+}
+
+async function processSyncItem(item: any) {
+  const sourceRes = await pool.query('SELECT * FROM providers WHERE id = $1', [item.source_provider]);
+  const sourceProvider = sourceRes.rows[0];
+  if (!sourceProvider) return;
+
+  const sourceToken = decrypt(sourceProvider.token);
+  const entities = Array.isArray(item.entities) ? item.entities : ['code'];
+
+  for (const targetRef of item.targets) {
+    if (targetRef.status === 'syncing') continue; // Avoid overlap
+
+    const targetRes = await pool.query('SELECT * FROM providers WHERE id = $1', [targetRef.provider_id]);
+    const targetProvider = targetRes.rows[0];
+    if (!targetProvider) continue;
+
+    const targetToken = decrypt(targetProvider.token);
+
+    try {
+      // Update status to syncing
+      targetRef.status = 'syncing';
+      targetRef.progress = 10;
+      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+
+      if (entities.includes('code')) await syncCode(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      targetRef.progress = 40;
+      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+
+      if (entities.includes('issues')) await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      targetRef.progress = 60;
+      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+
+      if (entities.includes('milestones')) await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      targetRef.progress = 80;
+      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+
+      if (entities.includes('releases')) await syncReleases(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      
+      targetRef.status = 'synced';
+      targetRef.progress = 100;
+      targetRef.last_sync = new Date().toISOString();
+      
+      await addLog({
+        level: "info",
+        code: "H-SYNC-OK",
+        provider: targetProvider.type,
+        message: `Successfully synced ${item.source_repo} to ${targetProvider.name}`,
+        technical_context: `Entities: ${entities.join(', ')}`,
+        ui_message: `Mirroring complete: ${item.source_repo}`,
+        resolution: "No action required."
+      });
+
+    } catch (err: any) {
+      targetRef.status = 'error';
+      targetRef.failure_reason = err.message;
+      
+      await pool.query('INSERT INTO dlq_items (id, source_repo, target_node, error_code, error_message) VALUES ($1, $2, $3, $4, $5)',
+        [crypto.randomUUID(), item.source_repo, targetProvider.name, 'SYNC_FAIL', err.message]);
+        
+      sysLog.error(`Sync failed for ${item.source_repo} -> ${targetProvider.name}: ${err.message}`);
+    }
+
+    await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+  }
+}
+
+// Background tasks
 setInterval(async () => {
   try {
     const matrixRes = await pool.query('SELECT * FROM sync_matrix');
     for (const item of matrixRes.rows) {
-      let changed = false;
-      const targets = item.targets;
-      
-      for (const target of targets) {
-        if (target.status === 'syncing') {
-          // Real implementation would call worker nodes or run git commands
-          // For now, we just keep it as 'syncing' or finish if simulated
-          // In production, this would be handled by a real job queue
-        }
-      }
-      
-      if (changed) {
-        await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), item.id]);
-      }
+      await processSyncItem(item);
     }
   } catch (err) {
     sysLog.error(`Sync engine error: ${err}`);
   }
-}, 60000); // Run every minute in production
+}, 60000); // Run every minute
 
 async function startServer() {
 
@@ -1011,7 +1255,8 @@ async function startServer() {
         id: repo.id,
         name: repo.name,
         description: repo.description || "Automated mirror target",
-        tags: repo.tags || ["hydrozoa", "mirror"]
+        tags: repo.tags || ["hydrozoa", "mirror"],
+        entities: repo.entities || entities || ["code"]
       };
     });
 
@@ -1054,7 +1299,7 @@ async function startServer() {
                 bytes_transferred: "0B",
                 progress: 0
               });
-              await pool.query('UPDATE sync_matrix SET targets = $1, entities = $2 WHERE id = $3', [JSON.stringify(targets), JSON.stringify(entities || ["code"]), existingSync.id]);
+              await pool.query('UPDATE sync_matrix SET targets = $1, entities = $2 WHERE id = $3', [JSON.stringify(targets), JSON.stringify(repo.entities), existingSync.id]);
             }
           } else {
             const newSync = {
@@ -1073,7 +1318,7 @@ async function startServer() {
                 bytes_transferred: "0B",
                 progress: 0
               }],
-              entities: entities || ["code"]
+              entities: repo.entities
             };
             await pool.query(
               'INSERT INTO sync_matrix (id, source_repo, source_provider, branch, last_commit, sync_interval, last_sync_duration, success_rate, targets, entities) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
