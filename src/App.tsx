@@ -21,7 +21,10 @@ import {
   X,
   Search,
   Box,
-  LogOut
+  LogOut,
+  Flag,
+  Tag,
+  Book
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -772,7 +775,7 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   return res;
 };
 
-const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>> }) => {
+const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void }) => {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
   const [repos, setRepos] = useState<Record<string, Repository[]>>({});
   const [repoPages, setRepoPages] = useState<Record<string, number>>({});
@@ -783,7 +786,6 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
   const [selectedTargetProviders, setSelectedTargetProviders] = useState<Set<string>>(new Set());
   const [syncEntities, setSyncEntities] = useState<string[]>(["code"]);
   const [repoEntities, setRepoEntities] = useState<Record<string, string[]>>({});
-  const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
 
@@ -1224,6 +1226,7 @@ function AppContent() {
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [passwordReset, setPasswordReset] = useState({ current: '', new: '', confirm: '' });
   const [passwordResetStatus, setPasswordResetStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -1827,6 +1830,7 @@ function AppContent() {
                 onRefresh={handleRefreshRepos} 
                 namespaces={namespaces}
                 setNamespaces={setNamespaces}
+                setProvisioningSummary={setProvisioningSummary}
               />
             </motion.div>
           )}
@@ -2028,54 +2032,56 @@ function AppContent() {
           </motion.div>
         </div>
       )}
-                <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-                  <motion.div 
-                    initial={{ scale: 0.9, opacity: 0, y: 20 }}
-                    animate={{ scale: 1, opacity: 1, y: 0 }}
-                    className="glass-card w-full max-w-md p-8 bg-[#0a0f1a] border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)]"
-                  >
-                    <div className="flex items-center gap-3 mb-8">
-                      <div className="w-10 h-10 bg-cyan-500/10 rounded-xl flex items-center justify-center">
-                        <Plus className="w-6 h-6 text-cyan-400" />
-                      </div>
-                      <h3 className="text-2xl font-black text-white uppercase tracking-tighter">Register Node</h3>
-                    </div>
-                    <form onSubmit={handleAddProvider} className="space-y-6">
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Display Name</label>
-                        <input name="name" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 outline-none transition-all font-medium" placeholder="e.g. Corporate GitLab" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Adapter Type</label>
-                        <select name="type" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium cursor-pointer">
-                          <option value="github">GitHub</option>
-                          <option value="gitlab_self_hosted">GitLab (Self-Hosted)</option>
-                          <option value="gitea">Gitea</option>
-                          <option value="forgejo">Forgejo</option>
-                          <option value="gogs">Gogs</option>
-                          <option value="bitbucket">Bitbucket</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Base URL</label>
-                        <input name="baseUrl" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="https://git.company.com" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Personal Access Token</label>
-                        <input name="token" type="password" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="glpat-xxxxxxxxxxxxxxx" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Webhook Secret (Optional)</label>
-                        <input name="webhookSecret" type="password" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="Secret for HMAC verification" />
-                      </div>
-                      <div className="flex gap-4 pt-6">
-                        <button type="button" onClick={() => setIsAddingProvider(false)} className="flex-1 px-6 py-3 glass-card hover:bg-white/10 text-xs font-black uppercase tracking-widest text-white transition-all">Cancel</button>
-                        <button type="submit" className="flex-1 px-6 py-3 bg-cyan-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-cyan-400 transition-all glow-cyan">Save Node</button>
-                      </div>
-                    </form>
-                  </motion.div>
-                </div>
-              )}
+
+      {isAddingProvider && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            className="glass-card w-full max-w-md p-8 bg-[#0a0f1a] border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)]"
+          >
+            <div className="flex items-center gap-3 mb-8">
+              <div className="w-10 h-10 bg-cyan-500/10 rounded-xl flex items-center justify-center">
+                <Plus className="w-6 h-6 text-cyan-400" />
+              </div>
+              <h3 className="text-2xl font-black text-white uppercase tracking-tighter">Register Node</h3>
+            </div>
+            <form onSubmit={handleAddProvider} className="space-y-6">
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Display Name</label>
+                <input name="name" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 outline-none transition-all font-medium" placeholder="e.g. Corporate GitLab" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Adapter Type</label>
+                <select name="type" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium cursor-pointer">
+                  <option value="github">GitHub</option>
+                  <option value="gitlab_self_hosted">GitLab (Self-Hosted)</option>
+                  <option value="gitea">Gitea</option>
+                  <option value="forgejo">Forgejo</option>
+                  <option value="gogs">Gogs</option>
+                  <option value="bitbucket">Bitbucket</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Base URL</label>
+                <input name="baseUrl" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="https://git.company.com" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Personal Access Token</label>
+                <input name="token" type="password" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="glpat-xxxxxxxxxxxxxxx" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Webhook Secret (Optional)</label>
+                <input name="webhookSecret" type="password" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="Secret for HMAC verification" />
+              </div>
+              <div className="flex gap-4 pt-6">
+                <button type="button" onClick={() => setIsAddingProvider(false)} className="flex-1 px-6 py-3 glass-card hover:bg-white/10 text-xs font-black uppercase tracking-widest text-white transition-all">Cancel</button>
+                <button type="submit" className="flex-1 px-6 py-3 bg-cyan-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-cyan-400 transition-all glow-cyan">Save Node</button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
             </motion.div>
           )}
 
