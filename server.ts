@@ -21,16 +21,59 @@ const MAX_LOGS = 500; // Truncate logs to prevent memory issues
 const MASTER_KEY = process.env.HYDROZOA_MASTER_KEY || "default-secret-key-32-chars-long!!";
 const ALGORITHM = "aes-256-gcm";
 
+// Console Styling Helpers
+const colors = {
+  reset: "\x1b[0m",
+  bright: "\x1b[1m",
+  dim: "\x1b[2m",
+  cyan: "\x1b[36m",
+  magenta: "\x1b[35m",
+  blue: "\x1b[34m",
+  yellow: "\x1b[33m",
+  green: "\x1b[32m",
+  red: "\x1b[31m",
+  gray: "\x1b[90m",
+  bgGreen: "\x1b[42m",
+  bgRed: "\x1b[41m",
+  bgYellow: "\x1b[43m",
+  bgBlue: "\x1b[44m",
+  white: "\x1b[37m"
+};
+
+const sysLog = {
+  info: (msg: string) => console.log(`${colors.bgBlue}${colors.white} INFO ${colors.reset} ${msg}`),
+  success: (msg: string) => console.log(`${colors.bgGreen}${colors.white}  OK  ${colors.reset} ${msg}`),
+  warn: (msg: string) => console.log(`${colors.bgYellow}${colors.white} WARN ${colors.reset} ${msg}`),
+  error: (msg: string) => console.error(`${colors.bgRed}${colors.white} FAIL ${colors.reset} ${msg}`),
+  startup: (msg: string) => console.log(`${colors.magenta}${colors.bright}${msg}${colors.reset}`),
+  debug: (msg: string) => console.log(`${colors.gray}${colors.dim}🔍 ${msg}${colors.reset}`)
+};
+
+const printHeader = () => {
+  console.log(`${colors.cyan}${colors.bright}
+   __  __           __                                
+  / / / /_  _______/ /________  __________  ____ _
+ / /_/ / / / / __  / ___/ __ \\/_  /_  __ \\/ __ \`/
+/ __  / /_/ / /_/ / /  / /_/ / / /_/ /_/ / /_/ / 
+/_/ /_/\\__, /\\__,_/_/   \\____/ /___/\\____/\\__,_/  
+      /____/                                       
+${colors.reset}${colors.gray}--- High Performance Repository Mirror Engine ---${colors.reset}
+`);
+};
+
 // Database Setup
 const DATABASE_URL = process.env.DATABASE_URL;
-console.log("🚀 Starting Hydrozoa with DATABASE_URL...");
+printHeader();
+sysLog.startup("Starting Hydrozoa instance...");
+
 if (!DATABASE_URL) {
-  throw new Error("❌ DATABASE_URL is not set. Database is mandatory for production.");
+  sysLog.error("DATABASE_URL is not set. Database is mandatory for production.");
+  process.exit(1);
 }
 const pool = new Pool({ connectionString: DATABASE_URL });
 
 async function initDb() {
-  console.log("📦 Initializing database schema...");
+  sysLog.info("Initializing database schema...");
   try {
     await pool.query(`
 
@@ -62,8 +105,17 @@ async function initDb() {
         last_sync_duration TEXT,
         success_rate INTEGER,
         targets JSONB NOT NULL,
+        entities JSONB DEFAULT '["code"]',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      -- Ensure entities column exists if table was created without it
+      DO $$ 
+      BEGIN 
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sync_matrix' AND column_name='entities') THEN
+          ALTER TABLE sync_matrix ADD COLUMN entities JSONB DEFAULT '["code"]';
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS dlq_items (
         id TEXT PRIMARY KEY,
@@ -105,9 +157,9 @@ async function initDb() {
       );
     }
     
-    console.log("✅ Database initialized successfully");
+    sysLog.success("Database initialized successfully");
   } catch (err) {
-    console.error("❌ Database initialization failed:", err);
+    sysLog.error(`Database initialization failed: ${err}`);
   }
 }
 
@@ -182,13 +234,14 @@ setInterval(async () => {
       if (changed) {
         await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), item.id]);
       }
+    } catch (err) {
+      sysLog.error(`Sync engine error: ${err}`);
     }
-  } catch (err) {
-    console.error("Sync engine error:", err);
-  }
-}, 60000); // Run every minute in production
+    }
+    }, 60000); // Run every minute in production
 
-async function startServer() {
+    async function startServer() {
+
   const app = express();
   const PORT = 3000;
 
@@ -278,6 +331,7 @@ async function startServer() {
         ...provider,
         is_source: true,
         isSource: true,
+        baseUrl: provider.url,
         token: "glpat-****"
       };
 
@@ -293,7 +347,7 @@ async function startServer() {
 
       res.json({ message: "Source provider updated", provider: updatedProvider });
     } catch (err: any) {
-      console.error("Error setting source provider:", err);
+      sysLog.error(`Error setting source provider: ${err}`);
       res.status(500).json({ error: "Internal server error while setting source provider", detail: err.message });
     }
   });
@@ -325,18 +379,34 @@ async function startServer() {
     try {
       const token = decrypt(sourceProvider.token);
       const baseUrl = sourceProvider.url.replace(/\/$/, '');
+      const headers: Record<string, string> = {
+        'User-Agent': 'Hydrozoa-Mirror-Agent',
+        'Accept': 'application/json'
+      };
       
       if (sourceProvider.type === 'github') {
-        const userRes = await fetch('https://api.github.com/user', {
-          headers: { 'Authorization': `token ${token}` }
-        });
+        headers['Authorization'] = `token ${token}`;
+        sysLog.info("Fetching GitHub namespaces...");
+        
+        const userRes = await fetch('https://api.github.com/user', { headers });
+        if (!userRes.ok) {
+          const errText = await userRes.text();
+          sysLog.error(`GitHub User API failed (${userRes.status}): ${errText}`);
+          return res.status(userRes.status).json({ error: "GitHub User API failed", detail: errText });
+        }
         const userData = await userRes.json();
-        const orgsRes = await fetch('https://api.github.com/user/orgs', {
-          headers: { 'Authorization': `token ${token}` }
-        });
+        
+        const orgsRes = await fetch('https://api.github.com/user/orgs', { headers });
+        if (!orgsRes.ok) {
+          const errText = await orgsRes.text();
+          sysLog.error(`GitHub Orgs API failed (${orgsRes.status}): ${errText}`);
+          // Don't fail entire request if only orgs fail
+        }
         const orgsData = await orgsRes.json();
         const safeOrgsData = Array.isArray(orgsData) ? orgsData : [];
         
+        sysLog.success(`Found user ${userData.login} and ${safeOrgsData.length} organizations`);
+
         return res.json([
           { id: userData.login, name: userData.login, type: 'user', repo_count: userData.public_repos + (userData.total_private_repos || 0) },
           ...safeOrgsData.map((org: any) => ({ id: org.login, name: org.login, type: 'organization', repo_count: 0 }))
@@ -344,14 +414,30 @@ async function startServer() {
       } 
       
       if (sourceProvider.type.includes('gitlab')) {
-        const groupsRes = await fetch(`${baseUrl}/api/v4/groups`, { headers: { 'Private-Token': token } });
-        const groupsData = await groupsRes.json();
-        const userRes = await fetch(`${baseUrl}/api/v4/user`, { headers: { 'Private-Token': token } });
+        headers['Private-Token'] = token;
+        sysLog.info(`Fetching GitLab namespaces from: ${baseUrl}`);
+
+        const userRes = await fetch(`${baseUrl}/api/v4/user`, { headers });
+        if (!userRes.ok) {
+          const errText = await userRes.text();
+          sysLog.error(`GitLab User API failed (${userRes.status}): ${errText}`);
+          return res.status(userRes.status).json({ error: "GitLab User API failed", detail: errText });
+        }
         const userData = await userRes.json();
+
+        const groupsRes = await fetch(`${baseUrl}/api/v4/groups`, { headers });
+        if (!groupsRes.ok) {
+          const errText = await groupsRes.text();
+          sysLog.error(`GitLab Groups API failed (${groupsRes.status}): ${errText}`);
+        }
+        const groupsData = await groupsRes.json();
         
+        const safeGroupsData = Array.isArray(groupsData) ? groupsData : [];
+        sysLog.success(`Found user ${userData.username} and ${safeGroupsData.length} groups`);
+
         return res.json([
           { id: `user-${userData.id}`, name: userData.username, type: 'user', repo_count: 0 },
-          ...groupsData.map((group: any) => ({ id: `group-${group.id}`, name: group.full_path, type: 'group', repo_count: 0 }))
+          ...safeGroupsData.map((group: any) => ({ id: `group-${group.id}`, name: group.full_path, type: 'group', repo_count: 0 }))
         ]);
       }
 
@@ -382,7 +468,7 @@ async function startServer() {
 
       return res.json([]);
     } catch (err) {
-      console.error("Failed to fetch namespaces:", err);
+      sysLog.error(`Failed to fetch namespaces: ${err}`);
       res.status(500).json({ error: "Failed to fetch namespaces from provider" });
     }
   });
@@ -397,34 +483,81 @@ async function startServer() {
     try {
       const token = decrypt(sourceProvider.token);
       const baseUrl = sourceProvider.url.replace(/\/$/, '');
+      const headers: Record<string, string> = {
+        'User-Agent': 'Hydrozoa-Mirror-Agent',
+        'Accept': 'application/json'
+      };
       
       if (sourceProvider.type === 'github') {
+        headers['Authorization'] = `token ${token}`;
         const url = `https://api.github.com/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=100`;
-        const reposRes = await fetch(url, { headers: { 'Authorization': `token ${token}` } });
+        sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
+
+        const reposRes = await fetch(url, { headers });
+        if (!reposRes.ok) {
+          const errText = await reposRes.text();
+          sysLog.error(`GitHub Repos API failed (${reposRes.status}) for ${id}: ${errText}`);
+          return res.status(reposRes.status).json({ error: "GitHub Repos API failed", detail: errText });
+        }
         const reposData = await reposRes.json();
         const safeReposData = Array.isArray(reposData) ? reposData : [];
-        return res.json(safeReposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.name, description: repo.description })));
+        
+        sysLog.success(`Found ${safeReposData.length} repos for GitHub namespace ${id}`);
+
+        return res.json(safeReposData.map((repo: any) => ({
+          id: repo.id.toString(),
+          name: repo.name,
+          description: repo.description
+        })));
       }
 
       if (sourceProvider.type.includes('gitlab')) {
+        headers['Private-Token'] = token;
         const url = id.startsWith('group-') 
           ? `${baseUrl}/api/v4/groups/${id.replace('group-', '')}/projects?per_page=100`
           : `${baseUrl}/api/v4/projects?owned=true&per_page=100`;
-        const reposRes = await fetch(url, { headers: { 'Private-Token': token } });
+        
+        sysLog.info(`Fetching GitLab projects for ${id} from ${url}`);
+
+        const reposRes = await fetch(url, { headers });
+        if (!reposRes.ok) {
+          const errText = await reposRes.text();
+          sysLog.error(`GitLab Projects API failed (${reposRes.status}) for ${id}: ${errText}`);
+          return res.status(reposRes.status).json({ error: "GitLab Projects API failed", detail: errText });
+        }
         const reposData = await reposRes.json();
         const safeReposData = Array.isArray(reposData) ? reposData : [];
-        return res.json(safeReposData.map((project: any) => ({ id: project.id.toString(), name: project.path_with_namespace, description: project.description })));
+        
+        sysLog.success(`Found ${safeReposData.length} projects for GitLab namespace ${id}`);
+
+        return res.json(safeReposData.map((project: any) => ({
+          id: project.id.toString(),
+          name: project.path_with_namespace,
+          description: project.description
+        })));
       }
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
-        const userRes = await fetch(`${baseUrl}/api/v1/user`, { headers: { 'Authorization': `token ${token}` } });
-        const userData = await userRes.json();
-        const isUser = id === userData.username;
-        const url = isUser ? `${baseUrl}/api/v1/user/repos` : `${baseUrl}/api/v1/orgs/${id}/repos`;
-        const reposRes = await fetch(url, { headers: { 'Authorization': `token ${token}` } });
+        // We try organization repos first, then fall back to user repos if needed
+        // Or better yet, Gitea often supports /repos/search or similar
+        let url = `${baseUrl}/api/v1/orgs/${id}/repos?per_page=100`;
+        let reposRes = await fetch(url, { headers });
+        
+        if (!reposRes.ok) {
+          // Fallback to user repos if org repos fail
+          url = `${baseUrl}/api/v1/user/repos?per_page=100`;
+          reposRes = await fetch(url, { headers });
+        }
+
+        if (!reposRes.ok) {
+          const errText = await reposRes.text();
+          sysLog.error(`Gitea/Forgejo/Gogs Repos API failed for ${id}: ${errText}`);
+          return res.status(reposRes.status).json({ error: "Provider Repos API failed", detail: errText });
+        }
+
         const reposData = await reposRes.json();
         const safeReposData = Array.isArray(reposData) ? reposData : [];
-        return res.json(safeReposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.full_name, description: repo.description })));
+        return res.json(safeReposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.full_name || repo.name, description: repo.description })));
       }
 
       if (sourceProvider.type === 'bitbucket') {
@@ -438,7 +571,7 @@ async function startServer() {
 
       return res.json([]);
     } catch (err) {
-      console.error("Failed to fetch repos:", err);
+      sysLog.error(`Failed to fetch repos: ${err}`);
       res.status(500).json({ error: "Failed to fetch repositories from provider" });
     }
   });
@@ -495,17 +628,18 @@ async function startServer() {
 
       res.status(201).json({
         ...provider,
-        isSource: provider.isSource
+        isSource: provider.isSource,
+        baseUrl: provider.url
       });
     } catch (err: any) {
-      console.error("Error adding provider:", err);
+      sysLog.error(`Error adding provider: ${err}`);
       res.status(500).json({ error: "Internal server error while adding provider", detail: err.message });
     }
   });
 
   app.post("/api/v1/webhooks/incoming/:providerId", (req, res) => {
     // In a real app, we'd verify HMAC signature here
-    console.log(`Incoming webhook for ${req.params.providerId}`);
+    sysLog.info(`Incoming webhook for ${req.params.providerId}`);
     res.status(202).json({ message: "Accepted" });
   });
 
@@ -644,12 +778,13 @@ async function startServer() {
     res.json(result.rows.map(p => ({
       ...p,
       isSource: p.is_source,
+      baseUrl: p.url,
       token: "ENCRYPTED"
     })));
   });
 
   app.post("/api/v1/source/selection", authenticateToken, async (req, res) => {
-    const { selectedRepos, targetProviderIds } = req.body;
+    const { selectedRepos, targetProviderIds, entities } = req.body;
     
     // Automation logic for target repository creation
     const selectedRepoDetails = selectedRepos.map((repo: any) => {
@@ -708,7 +843,7 @@ async function startServer() {
                 bytes_transferred: "0B",
                 progress: 0
               });
-              await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), existingSync.id]);
+              await pool.query('UPDATE sync_matrix SET targets = $1, entities = $2 WHERE id = $3', [JSON.stringify(targets), JSON.stringify(entities || ["code"]), existingSync.id]);
             }
           } else {
             const newSync = {
@@ -726,11 +861,12 @@ async function startServer() {
                 last_sync: new Date().toISOString(),
                 bytes_transferred: "0B",
                 progress: 0
-              }]
+              }],
+              entities: entities || ["code"]
             };
             await pool.query(
-              'INSERT INTO sync_matrix (id, source_repo, source_provider, branch, last_commit, sync_interval, last_sync_duration, success_rate, targets) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-              [newSync.id, newSync.source_repo, newSync.source_provider, newSync.branch, newSync.last_commit, newSync.sync_interval, newSync.last_sync_duration, newSync.success_rate, JSON.stringify(newSync.targets)]
+              'INSERT INTO sync_matrix (id, source_repo, source_provider, branch, last_commit, sync_interval, last_sync_duration, success_rate, targets, entities) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+              [newSync.id, newSync.source_repo, newSync.source_provider, newSync.branch, newSync.last_commit, newSync.sync_interval, newSync.last_sync_duration, newSync.success_rate, JSON.stringify(newSync.targets), JSON.stringify(newSync.entities)]
             );
           }
         } else {
@@ -764,53 +900,30 @@ async function startServer() {
   app.post("/api/v1/sync/manual/:id", authenticateToken, async (req, res) => {
     const { id } = req.params;
     
-    if (pool) {
-      const result = await pool.query('SELECT * FROM sync_matrix WHERE id = $1', [id]);
-      const item = result.rows[0];
-      if (!item) return res.status(404).json({ error: "Sync item not found" });
+    const result = await pool.query('SELECT * FROM sync_matrix WHERE id = $1', [id]);
+    const item = result.rows[0];
+    if (!item) return res.status(404).json({ error: "Sync item not found" });
 
-      const targets = item.targets.map((t: any) => ({
-        ...t,
-        status: 'syncing',
-        progress: 0,
-        last_sync: new Date().toISOString()
-      }));
+    const targets = item.targets.map((t: any) => ({
+      ...t,
+      status: 'syncing',
+      progress: 0,
+      last_sync: new Date().toISOString()
+    }));
 
-      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), id]);
-      
-      await addLog({
-        level: "info",
-        code: "H-SYNC-MANUAL",
-        provider: item.source_provider,
-        message: `Manual sync triggered for ${item.source_repo}`,
-        technical_context: `Sync ID: ${id}`,
-        ui_message: `Manual sync started: ${item.source_repo}`,
-        resolution: "Sync in progress."
-      });
+    await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), id]);
+    
+    await addLog({
+      level: "info",
+      code: "H-SYNC-MANUAL",
+      provider: item.source_provider,
+      message: `Manual sync triggered for ${item.source_repo}`,
+      technical_context: `Sync ID: ${id}`,
+      ui_message: `Manual sync started: ${item.source_repo}`,
+      resolution: "Sync in progress."
+    });
 
-      res.json({ message: "Manual sync initiated" });
-    } else {
-      const item = syncMatrix.find(s => s.id === id);
-      if (!item) return res.status(404).json({ error: "Sync item not found" });
-
-      item.targets.forEach((t: any) => {
-        t.status = 'syncing';
-        t.progress = 0;
-        t.last_sync = new Date().toISOString();
-      });
-
-      await addLog({
-        level: "info",
-        code: "H-SYNC-MANUAL",
-        provider: item.source_provider,
-        message: `Manual sync triggered for ${item.source_repo}`,
-        technical_context: `Sync ID: ${id}`,
-        ui_message: `Manual sync started: ${item.source_repo}`,
-        resolution: "Sync in progress."
-      });
-
-      res.json({ message: "Manual sync initiated" });
-    }
+    res.json({ message: "Manual sync initiated", item: { ...item, targets } });
   });
 
   app.get("/api/v1/system/settings", authenticateToken, (req, res) => {
@@ -824,10 +937,8 @@ async function startServer() {
     });
   });
 
-  app.post("/api/v1/system/settings", authenticateToken, (req, res) => {
-    // Update settings logic
-    logs.push({
-      timestamp: new Date().toISOString(),
+  app.post("/api/v1/system/settings", authenticateToken, async (req, res) => {
+    await addLog({
       level: "info",
       code: "H-SYS-CONFIG",
       provider: "system",
@@ -855,9 +966,9 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    sysLog.startup(`Server running on http://localhost:${PORT}`);
   });
 }
 
-console.log("⚡ Calling startServer...");
+sysLog.info("Calling startServer...");
 startServer();

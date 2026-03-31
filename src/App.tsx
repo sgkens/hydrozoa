@@ -66,6 +66,7 @@ interface SyncMatrixItem {
   last_sync_duration?: string;
   success_rate?: number;
   targets: SyncTarget[];
+  entities?: string[];
 }
 
 interface DLQItem {
@@ -687,8 +688,15 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
   const [selectedRepos, setSelectedRepos] = useState<Set<string>>(new Set());
   const [selectedNamespaces, setSelectedNamespaces] = useState<Set<string>>(new Set());
   const [selectedTargetProviders, setSelectedTargetProviders] = useState<Set<string>>(new Set());
+  const [syncEntities, setSyncEntities] = useState<string[]>(["code"]);
 
   const [isSaving, setIsSaving] = useState(false);
+
+  const toggleEntity = (entity: string) => {
+    setSyncEntities(prev => 
+      prev.includes(entity) ? prev.filter(e => e !== entity) : [...prev, entity]
+    );
+  };
 
   const sourceProvider = providers.find(p => p.isSource);
 
@@ -801,7 +809,8 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
         method: 'POST',
         body: JSON.stringify({ 
           selectedRepos: selectedRepoObjects,
-          targetProviderIds: Array.from(selectedTargetProviders)
+          targetProviderIds: Array.from(selectedTargetProviders),
+          entities: syncEntities
         })
       });
       if (res.ok) {
@@ -877,9 +886,22 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces }: { 
           </div>
           <div>
             <h3 className="text-xl font-black text-white uppercase tracking-tighter">Source Selection</h3>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
-              {sourceProvider ? `Fetching from ${sourceProvider.name}` : 'No source provider selected. Set one in the Providers tab.'}
-            </p>
+            <div className="flex gap-2 mt-1">
+              {['code', 'issues', 'milestones', 'wiki', 'releases'].map(entity => (
+                <button
+                  key={entity}
+                  onClick={() => toggleEntity(entity)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border transition-all",
+                    syncEntities.includes(entity)
+                      ? "bg-magenta-500/20 border-magenta-500/40 text-magenta-400"
+                      : "bg-white/5 border-white/10 text-slate-500 hover:border-white/20"
+                  )}
+                >
+                  {entity}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-4">
