@@ -392,8 +392,9 @@ async function startServer() {
         if (!userRes.ok) {
           const errText = await userRes.text();
           sysLog.error(`GitHub User API failed (${userRes.status}): ${errText}`);
-          return res.status(userRes.status).json({ error: "GitHub User API failed", detail: errText });
+          return res.status(502).json({ error: "GitHub API authentication failed", detail: errText });
         }
+
         const userData = await userRes.json();
         
         const orgsRes = await fetch('https://api.github.com/user/orgs', { headers });
@@ -421,8 +422,9 @@ async function startServer() {
         if (!userRes.ok) {
           const errText = await userRes.text();
           sysLog.error(`GitLab User API failed (${userRes.status}): ${errText}`);
-          return res.status(userRes.status).json({ error: "GitLab User API failed", detail: errText });
+          return res.status(502).json({ error: "GitLab API authentication failed", detail: errText });
         }
+
         const userData = await userRes.json();
 
         const groupsRes = await fetch(`${baseUrl}/api/v4/groups`, { headers });
@@ -442,11 +444,25 @@ async function startServer() {
       }
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
+        sysLog.info(`Fetching ${sourceProvider.type} namespaces from: ${baseUrl}`);
         const userRes = await fetch(`${baseUrl}/api/v1/user`, { headers: { 'Authorization': `token ${token}` } });
+        if (!userRes.ok) {
+          const errText = await userRes.text();
+          sysLog.error(`${sourceProvider.type} User API failed (${userRes.status}): ${errText}`);
+          const hydrozoaStatus = [401, 403].includes(userRes.status) ? 502 : userRes.status;
+          return res.status(hydrozoaStatus).json({ error: `${sourceProvider.type} API authentication failed`, detail: errText });
+        }
         const userData = await userRes.json();
+
         const orgsRes = await fetch(`${baseUrl}/api/v1/user/orgs`, { headers: { 'Authorization': `token ${token}` } });
+        if (!orgsRes.ok) {
+          const errText = await orgsRes.text();
+          sysLog.error(`${sourceProvider.type} Orgs API failed (${orgsRes.status}): ${errText}`);
+        }
         const orgsData = await orgsRes.json();
         const safeOrgsData = Array.isArray(orgsData) ? orgsData : [];
+
+        sysLog.success(`Found user ${userData.username} and ${safeOrgsData.length} organizations on ${sourceProvider.type}`);
 
         return res.json([
           { id: userData.username, name: userData.username, type: 'user', repo_count: 0 },
@@ -455,14 +471,29 @@ async function startServer() {
       }
 
       if (sourceProvider.type === 'bitbucket') {
+        sysLog.info("Fetching Bitbucket namespaces...");
         const userRes = await fetch('https://api.bitbucket.org/2.0/user', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!userRes.ok) {
+          const errText = await userRes.text();
+          sysLog.error(`Bitbucket User API failed (${userRes.status}): ${errText}`);
+          const hydrozoaStatus = [401, 403].includes(userRes.status) ? 502 : userRes.status;
+          return res.status(hydrozoaStatus).json({ error: "Bitbucket API authentication failed", detail: errText });
+        }
         const userData = await userRes.json();
+
         const workspacesRes = await fetch('https://api.bitbucket.org/2.0/workspaces', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!workspacesRes.ok) {
+          const errText = await workspacesRes.text();
+          sysLog.error(`Bitbucket Workspaces API failed (${workspacesRes.status}): ${errText}`);
+        }
         const workspacesData = await workspacesRes.json();
+        const safeWorkspacesData = Array.isArray(workspacesData.values) ? workspacesData.values : [];
+        
+        sysLog.success(`Found user ${userData.display_name} and ${safeWorkspacesData.length} workspaces on Bitbucket`);
 
         return res.json([
           { id: userData.uuid, name: userData.display_name, type: 'user', repo_count: 0 },
-          ...workspacesData.values.map((ws: any) => ({ id: ws.slug, name: ws.name, type: 'workspace', repo_count: 0 }))
+          ...safeWorkspacesData.map((ws: any) => ({ id: ws.slug, name: ws.name, type: 'workspace', repo_count: 0 }))
         ]);
       }
 
@@ -497,7 +528,8 @@ async function startServer() {
         if (!reposRes.ok) {
           const errText = await reposRes.text();
           sysLog.error(`GitHub Repos API failed (${reposRes.status}) for ${id}: ${errText}`);
-          return res.status(reposRes.status).json({ error: "GitHub Repos API failed", detail: errText });
+          const hydrozoaStatus = [401, 403].includes(reposRes.status) ? 502 : reposRes.status;
+          return res.status(hydrozoaStatus).json({ error: "GitHub Repos API failed", detail: errText });
         }
         const reposData = await reposRes.json();
         const safeReposData = Array.isArray(reposData) ? reposData : [];
@@ -523,7 +555,8 @@ async function startServer() {
         if (!reposRes.ok) {
           const errText = await reposRes.text();
           sysLog.error(`GitLab Projects API failed (${reposRes.status}) for ${id}: ${errText}`);
-          return res.status(reposRes.status).json({ error: "GitLab Projects API failed", detail: errText });
+          const hydrozoaStatus = [401, 403].includes(reposRes.status) ? 502 : reposRes.status;
+          return res.status(hydrozoaStatus).json({ error: "GitLab Projects API failed", detail: errText });
         }
         const reposData = await reposRes.json();
         const safeReposData = Array.isArray(reposData) ? reposData : [];
@@ -539,32 +572,43 @@ async function startServer() {
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
         // We try organization repos first, then fall back to user repos if needed
-        // Or better yet, Gitea often supports /repos/search or similar
         let url = `${baseUrl}/api/v1/orgs/${id}/repos?per_page=100`;
-        let reposRes = await fetch(url, { headers });
+        sysLog.info(`Fetching ${sourceProvider.type} repos for ${id} from ${url}`);
+        let reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         
         if (!reposRes.ok) {
           // Fallback to user repos if org repos fail
           url = `${baseUrl}/api/v1/user/repos?per_page=100`;
-          reposRes = await fetch(url, { headers });
+          sysLog.info(`Falling back to ${sourceProvider.type} user repos for ${id} from ${url}`);
+          reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         }
 
         if (!reposRes.ok) {
           const errText = await reposRes.text();
-          sysLog.error(`Gitea/Forgejo/Gogs Repos API failed for ${id}: ${errText}`);
-          return res.status(reposRes.status).json({ error: "Provider Repos API failed", detail: errText });
+          sysLog.error(`${sourceProvider.type} Repos API failed (${reposRes.status}) for ${id}: ${errText}`);
+          const hydrozoaStatus = [401, 403].includes(reposRes.status) ? 502 : reposRes.status;
+          return res.status(hydrozoaStatus).json({ error: "Provider Repos API failed", detail: errText });
         }
 
         const reposData = await reposRes.json();
         const safeReposData = Array.isArray(reposData) ? reposData : [];
+        sysLog.success(`Found ${safeReposData.length} repos for ${sourceProvider.type} namespace ${id}`);
         return res.json(safeReposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.full_name || repo.name, description: repo.description })));
       }
 
       if (sourceProvider.type === 'bitbucket') {
         const url = `https://api.bitbucket.org/2.0/repositories/${id}?per_page=100`;
-        const reposRes = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        sysLog.info(`Fetching Bitbucket repos for ${id} from ${url}`);
+        const reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `Bearer ${token}` } });
+        if (!reposRes.ok) {
+          const errText = await reposRes.text();
+          sysLog.error(`Bitbucket Repos API failed (${reposRes.status}) for ${id}: ${errText}`);
+          const hydrozoaStatus = [401, 403].includes(reposRes.status) ? 502 : reposRes.status;
+          return res.status(hydrozoaStatus).json({ error: "Bitbucket Repos API failed", detail: errText });
+        }
         const reposData = await reposRes.json();
         const reposList = Array.isArray(reposData.values) ? reposData.values : [];
+        sysLog.success(`Found ${reposList.length} repos for Bitbucket namespace ${id}`);
         return res.json(reposList.map((repo: any) => ({ id: repo.uuid, name: repo.full_name, description: repo.description })));
       }
 
@@ -646,41 +690,22 @@ async function startServer() {
   app.delete("/api/v1/auth/providers/:id", authenticateToken, async (req, res) => {
     const { id } = req.params;
     
-    if (pool) {
-      const result = await pool.query('SELECT * FROM providers WHERE id = $1', [id]);
-      const deleted = result.rows[0];
-      if (deleted) {
-        await pool.query('DELETE FROM providers WHERE id = $1', [id]);
-        await addLog({
-          level: "warn",
-          code: "H-PROV-DELETE",
-          provider: deleted.id,
-          message: `Provider node ${deleted.name} decommissioned`,
-          technical_context: `Removed from active provider pool`,
-          ui_message: `Provider ${deleted.name} has been removed.`,
-          resolution: "No action required."
-        });
-        res.json({ message: "Provider deleted" });
-      } else {
-        res.status(404).json({ error: "Provider not found" });
-      }
+    const result = await pool.query('SELECT * FROM providers WHERE id = $1', [id]);
+    const deleted = result.rows[0];
+    if (deleted) {
+      await pool.query('DELETE FROM providers WHERE id = $1', [id]);
+      await addLog({
+        level: "warn",
+        code: "H-PROV-DELETE",
+        provider: deleted.id,
+        message: `Provider node ${deleted.name} decommissioned`,
+        technical_context: `Removed from active provider pool`,
+        ui_message: `Provider ${deleted.name} has been removed.`,
+        resolution: "No action required."
+      });
+      res.json({ message: "Provider deleted" });
     } else {
-      const index = providers.findIndex(p => p.id === id);
-      if (index !== -1) {
-        const deleted = providers.splice(index, 1)[0];
-        await addLog({
-          level: "warn",
-          code: "H-PROV-DELETE",
-          provider: deleted.id,
-          message: `Provider node ${deleted.name} decommissioned`,
-          technical_context: `Removed from active provider pool`,
-          ui_message: `Provider ${deleted.name} has been removed.`,
-          resolution: "No action required."
-        });
-        res.json({ message: "Provider deleted" });
-      } else {
-        res.status(404).json({ error: "Provider not found" });
-      }
+      res.status(404).json({ error: "Provider not found" });
     }
   });
 
