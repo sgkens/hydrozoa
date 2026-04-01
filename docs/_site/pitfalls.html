@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Pitfalls | Hydrozoa</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="Pitfalls" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="A self-hosted Git Multipoint Mirror Agent for synchronizing repositories, issues, and metadata across multiple providers with a bioluminescent deep-sea aesthetic." />
+<meta property="og:description" content="A self-hosted Git Multipoint Mirror Agent for synchronizing repositories, issues, and metadata across multiple providers with a bioluminescent deep-sea aesthetic." />
+<link rel="canonical" href="http://localhost:4000/pitfalls.html" />
+<meta property="og:url" content="http://localhost:4000/pitfalls.html" />
+<meta property="og:site_name" content="Hydrozoa" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Pitfalls" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","description":"A self-hosted Git Multipoint Mirror Agent for synchronizing repositories, issues, and metadata across multiple providers with a bioluminescent deep-sea aesthetic.","headline":"Pitfalls","url":"http://localhost:4000/pitfalls.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/css/style.css"><link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="Hydrozoa" /><link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="radial-glow-bg"></div><header class="site-header" role="banner">
+  <div class="wrapper">
+    <div class="header-content">
+      <a class="site-title" rel="author" href="/">
+        <img src="/assets/images/logo.svg" alt="Hydrozoa Logo" class="logo">
+        <span>Hydrozoa</span>
+      </a>
+      <nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,12.031,18,12.696,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+        <div class="trigger">
+          <a class="page-link" href="/installation">Installation</a>
+          <a class="page-link" href="/deployment">Deployment</a>
+          <a class="page-link" href="/features">Features</a>
+          <a class="page-link" href="/why-hydrozoa">Why Hydrozoa?</a>
+          <a class="page-link" href="/pitfalls">Pitfalls</a>
+        </div>
+      </nav>
+    </div>
+  </div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <h1 id="potential-pitfalls">Potential Pitfalls</h1>
+
+<p>While Hydrozoa is designed for robust Git synchronization, there are some common pitfalls to be aware of.</p>
+
+<h2 id="1-api-rate-limiting">1. API Rate Limiting</h2>
+
+<p>Git providers like GitHub and GitLab have strict API rate limits. If you’re running multiple concurrent syncs or have a large number of repositories, you may hit these limits.</p>
+
+<ul>
+  <li><strong>Symptom</strong>: Sync operations fail with “403 Forbidden” or “429 Too Many Requests” errors.</li>
+  <li><strong>Solution</strong>: Increase the <code class="language-plaintext highlighter-rouge">sync_interval</code> in your settings or reduce the number of concurrent syncs.</li>
+</ul>
+
+<h2 id="2-inconsistent-metadata">2. Inconsistent Metadata</h2>
+
+<p>While Hydrozoa aims to sync repository metadata (issues, PRs, etc.), different Git providers have different metadata structures.</p>
+
+<ul>
+  <li><strong>Symptom</strong>: Issues or PRs are not fully synced or have missing information.</li>
+  <li><strong>Solution</strong>: Check the provider compatibility documentation and ensure your API tokens have the necessary permissions.</li>
+</ul>
+
+<h2 id="3-conflict-resolution">3. Conflict Resolution</h2>
+
+<p>In bidirectional sync scenarios, conflicts can occur if changes are made to both the source and target repositories simultaneously.</p>
+
+<ul>
+  <li><strong>Symptom</strong>: Sync operations fail or result in inconsistent data.</li>
+  <li><strong>Solution</strong>: Choose a clear conflict resolution strategy (e.g., <code class="language-plaintext highlighter-rouge">source_wins</code>) and avoid making changes to both repositories at the same time.</li>
+</ul>
+
+<h2 id="4-resource-exhaustion">4. Resource Exhaustion</h2>
+
+<p>Running multiple concurrent syncs can consume significant CPU and memory resources on your host machine.</p>
+
+<ul>
+  <li><strong>Symptom</strong>: The agent becomes unresponsive or crashes.</li>
+  <li><strong>Solution</strong>: Monitor your system resources and adjust the <code class="language-plaintext highlighter-rouge">max_concurrent_syncs</code> in your settings.</li>
+</ul>
+
+<h2 id="5-api-token-expiration">5. API Token Expiration</h2>
+
+<p>If your API tokens expire or are revoked, Hydrozoa will no longer be able to sync your repositories.</p>
+
+<ul>
+  <li><strong>Symptom</strong>: Sync operations fail with “401 Unauthorized” errors.</li>
+  <li><strong>Solution</strong>: Regularly check and update your API tokens in the Hydrozoa dashboard.</li>
+</ul>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+  <div class="wrapper">
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">Hydrozoa</li></ul>
+      </div>
+      <div class="footer-col footer-col-2"><ul class="social-media-list"></ul>
+</div>
+      <div class="footer-col footer-col-3">
+        <p>A self-hosted Git Multipoint Mirror Agent for synchronizing repositories, issues, and metadata across multiple providers with a bioluminescent deep-sea aesthetic.</p>
+      </div>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
