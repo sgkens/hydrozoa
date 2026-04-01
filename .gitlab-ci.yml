@@ -10,6 +10,7 @@ variables:
   DOCKER_IMAGE: "index.docker.io/$DOCKER_HUB_USER/hydrozoa"
 
 # 1. Versioning Stage
+# Always run to ensure we have the correct BUILD_VERSION
 generate_version:
   stage: version
   image: mcr.microsoft.com/powershell:lts-alpine
@@ -42,6 +43,7 @@ lint_code:
     - npm run lint
 
 # 4. Docker Build Stage
+# Test build on merge (main/develop) and tags
 build_image:
   stage: docker-build
   image: docker:24.0.5
@@ -59,8 +61,13 @@ build_image:
     paths:
       - hydrozoa_image.tar
     expire_in: 1 hour
+  only:
+    - main
+    - develop
+    - tags
 
 # 5. Docker Push Stage
+# Only deploy on tag push
 push_image:
   stage: docker-push
   image: docker:24.0.5
@@ -78,9 +85,10 @@ push_image:
     - docker tag $DOCKER_IMAGE:$BUILD_VERSION $DOCKER_IMAGE:latest
     - docker push $DOCKER_IMAGE:latest
   only:
-    - main
+    - tags
 
 # 6. GitLab Release Stage
+# Only release on tag push
 create_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
@@ -107,4 +115,4 @@ create_release:
         --tag-name "v$BUILD_VERSION" \
         --assets-link "{\"name\":\"${FILE_NAME}\",\"url\":\"${PACKAGE_URL}\"}"
   only:
-    - main
+    - tags
