@@ -7,15 +7,15 @@ stages:
   - release
 
 variables:
-  DOCKER_IMAGE: "index.docker.io/$DOCKER_HUB_USER/hydrozoa"
+  DOCKER_IMAGE: "index.docker.io/${DOCKER_HUB_USER:-sgkens}/hydrozoa"
 
 # 1. Versioning Stage
-# Always run to ensure we have the correct BUILD_VERSION
 generate_version:
   stage: version
   image: mcr.microsoft.com/powershell:lts-alpine
   script:
     - pwsh -File devops/generate-build-env.ps1
+    - cat build.env
   artifacts:
     reports:
       dotenv: build.env
@@ -43,7 +43,6 @@ lint_code:
     - npm run lint
 
 # 4. Docker Build Stage
-# Test build on merge (main/develop) and tags
 build_image:
   stage: docker-build
   image: docker:24.0.5
@@ -54,7 +53,12 @@ build_image:
       artifacts: true
     - job: build_frontend
       artifacts: true
+  before_script:
+    - apk add --no-cache git
   script:
+    - echo "Building image for version $BUILD_VERSION"
+    - echo "Target image $DOCKER_IMAGE:$BUILD_VERSION"
+    - if [ -z "$BUILD_VERSION" ]; then echo "Error BUILD_VERSION is empty"; exit 1; fi
     - docker build -t $DOCKER_IMAGE:$BUILD_VERSION .
     - docker save $DOCKER_IMAGE:$BUILD_VERSION > hydrozoa_image.tar
   artifacts:
@@ -67,7 +71,6 @@ build_image:
     - tags
 
 # 5. Docker Push Stage
-# Only deploy on tag push
 push_image:
   stage: docker-push
   image: docker:24.0.5
@@ -78,9 +81,11 @@ push_image:
       artifacts: true
     - job: build_image
       artifacts: true
+  before_script:
+    - apk add --no-cache git
   script:
     - docker load < hydrozoa_image.tar
-    - echo "$DOCKER_HUB_TOKEN" | docker login -u "$DOCKER_HUB_USER" --password-stdin
+    - echo "$DOCKER_HUB_TOKEN" | docker login -u "${DOCKER_HUB_USER:-sgkens}" --password-stdin
     - docker push $DOCKER_IMAGE:$BUILD_VERSION
     - docker tag $DOCKER_IMAGE:$BUILD_VERSION $DOCKER_IMAGE:latest
     - docker push $DOCKER_IMAGE:latest
@@ -88,7 +93,6 @@ push_image:
     - tags
 
 # 6. GitLab Release Stage
-# Only release on tag push
 create_release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
