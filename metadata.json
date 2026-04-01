@@ -1,0 +1,5 @@
+{
+  "name": "Hydrozoa - Git Multipoint Mirror Agent",
+  "description": "A self-hosted Git Multipoint Mirror Agent for synchronizing repositories, issues, and metadata across multiple providers with a bioluminescent deep-sea aesthetic.",
+  "requestFramePermissions": []
+}
