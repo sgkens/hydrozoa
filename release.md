@@ -1,13 +1,14 @@
-# Release Notes - v0.5.0
+# Release Notes
 
-## What's New
-- Initial DevOps infrastructure setup.
-- GitLab CI/CD pipeline with Docker Hub integration.
-- Automated semantic versioning via PowerShell.
-- Production-ready Dockerfile.
-- Aligned brand assets (Logo & Banner).
+## Features
+- **Initial Infrastructure**: Full DevOps setup with GitLab CI/CD integration.
+- **Repository Provisioning**: Fixed GitHub/Bitbucket API normalization to prevent UI redirects.
+- **Automated Versioning**: Implemented automated SemVer generation during build time via PowerShell.
+- **Container Support**: Production-ready Dockerfile and Docker Hub integration.
+- **Mirroring Engine**: High-performance Git mirroring for code and metadata.
 
-## Technical Changes
-- Added `.gitlab-ci.yml`.
-- Added `devops/` directory for build scripts.
-- Configured multi-stage Docker builds.
+## Technical Improvements
+- Added `.gitlab-ci.yml` for automated pipelines.
+- Implemented `devops/` build tools for environment generation.
+- Normalized provider API endpoints in `server.ts`.
+- Configured multi-stage Docker builds for optimized images.

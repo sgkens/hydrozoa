@@ -1,6 +1,6 @@
-# 🪼 Hydrozoa Roadmap - RC 1.0.0
+# 🪼 Hydrozoa Roadmap
 
-## **Milestone: 1.0.0-RC1 (Release Candidate 1)**
+## **Milestone: Foundation & Core Implementation**
 **Goal:** Achieve full end-to-end synchronization for all primary entities with production-grade stability.
 
 ### **Features**

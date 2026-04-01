@@ -13,8 +13,6 @@ Example
 
 ```text
 feat(scope) message
-
-build majorminorpatch commit if version bump not needed
 ```
 
  When committing, I prefer adding files by scope instead of staging everything at once.

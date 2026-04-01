@@ -1,7 +1,7 @@
 {
   "name": "hydrozoa",
   "private": true,
-  "version": "1.0.0-rc.1",
+  "version": "0.0.0-development",
   "type": "module",
   "scripts": {
     "dev": "tsx --env-file=.env server.ts",
