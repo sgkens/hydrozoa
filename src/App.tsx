@@ -1203,7 +1203,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                           Mirror Active
                         </div>
                       </div>
-                    ))}
+                    );})}
                     
                     {hasMoreRepos[ns.id] && (
                       <button 
