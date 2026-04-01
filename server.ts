@@ -1408,10 +1408,11 @@ async function startServer() {
       if (!provider) return res.status(404).json({ error: "Provider not found" });
 
       const start = Date.now();
+      const type = provider.type.toLowerCase();
       let baseUrl = provider.url.replace(/\/$/, '');
-  if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
-    baseUrl = 'https://api.github.com';
-  }
+      if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
+        baseUrl = 'https://api.github.com';
+      }
       
       // Simple HEAD request to check reachability
       const pingRes = await fetch(baseUrl, { 

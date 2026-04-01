@@ -354,9 +354,15 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
               </div>
               
               <div className="col-span-1">
-                <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                  <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full glow-cyan" />
-                  {getProvider(item.source_provider)?.name || 'Unknown'}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                    <div className="w-1.5 h-1.5 bg-magenta-400 rounded-full glow-magenta" />
+                    {getProvider(item.source_provider)?.name || 'Unknown'}
+                  </div>
+                  <div className="flex items-center gap-1.5 ml-3.5">
+                    {getProvider(item.source_provider)?.type.includes('github') ? <Github className="w-2.5 h-2.5 text-slate-600" /> : <Gitlab className="w-2.5 h-2.5 text-slate-600" />}
+                    <span className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter">{getProvider(item.source_provider)?.type}</span>
+                  </div>
                 </div>
               </div>
 
@@ -775,7 +781,7 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   return res;
 };
 
-const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void }) => {
+const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary, syncMatrix }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void, syncMatrix: SyncMatrixItem[] }) => {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
   const [repos, setRepos] = useState<Record<string, Repository[]>>({});
   const [repoPages, setRepoPages] = useState<Record<string, number>>({});
@@ -788,6 +794,26 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   const [repoEntities, setRepoEntities] = useState<Record<string, string[]>>({});
 
   const [isSaving, setIsSaving] = useState(false);
+
+  // Initialize from syncMatrix
+  useEffect(() => {
+    if (syncMatrix.length > 0) {
+      const repos = new Set<string>();
+      const targets = new Set<string>();
+      
+      syncMatrix.forEach(item => {
+        // Find repo ID if we have it in our loaded repos
+        // This is tricky because we might not have loaded the namespace yet
+        // For now, we'll track by name if ID isn't available, but the system uses IDs
+        // However, the sync_matrix stores source_repo as name/path string
+        repos.add(item.source_repo);
+        item.targets.forEach(t => targets.add(t.provider_id));
+      });
+      
+      setSelectedRepos(repos);
+      setSelectedTargetProviders(targets);
+    }
+  }, [syncMatrix]);
 
   const toggleEntity = (entity: string) => {
     setSyncEntities(prev => 
@@ -997,10 +1023,18 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                 {p.type === 'github' ? <Github className="w-5 h-5" /> : <Gitlab className="w-5 h-5" />}
               </div>
               <div className="text-left">
-                <p className={cn(
-                  "text-xs font-black uppercase tracking-widest",
-                  selectedTargetProviders.has(p.id) ? "text-white" : "text-slate-500"
-                )}>{p.name}</p>
+                <div className="flex items-center gap-2">
+                  <p className={cn(
+                    "text-xs font-black uppercase tracking-widest",
+                    selectedTargetProviders.has(p.id) ? "text-white" : "text-slate-500"
+                  )}>{p.name}</p>
+                  <span className={cn(
+                    "text-[7px] font-black px-1 py-0.5 rounded uppercase tracking-tighter",
+                    p.isSource ? "bg-magenta-500/20 text-magenta-400" : "bg-cyan-500/20 text-cyan-400"
+                  )}>
+                    {p.isSource ? "Source" : "Target"}
+                  </span>
+                </div>
                 <p className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter mt-0.5">{p.type}</p>
               </div>
               <div className="ml-auto">
@@ -1115,26 +1149,36 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                   className="border-t border-white/5 bg-black/20"
                 >
                   <div className="p-4 space-y-2">
-                    {repos[ns.id]?.map((repo) => (
-                      <div 
-                        key={repo.id} 
-                        className="flex items-center justify-between p-3 rounded-lg hover:bg-white/5 transition-colors group"
-                        onClick={() => handleRepoCheck(ns.id, repo.id)}
-                      >
-                        <div className="flex items-center gap-3">
-                          <button className="p-1">
-                            {selectedRepos.has(repo.id) ? (
-                              <CheckCircle2 className="w-4 h-4 text-cyan-400" />
-                            ) : (
-                              <Circle className="w-4 h-4 text-slate-700" />
-                            )}
-                          </button>
-                          <div>
-                            <p className="text-sm font-bold text-slate-300 group-hover:text-white transition-colors">{repo.name}</p>
-                            <div className="flex gap-2 items-center mt-1">
-                              {selectedRepos.has(repo.id) ? (
-                                <div className="flex gap-1">
-                                  {['code', 'issues', 'milestones', 'releases'].map(ent => (
+                    {repos[ns.id]?.map((repo) => {
+                      const isSynced = syncMatrix.some(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`);
+                      return (
+                        <div 
+                          key={repo.id} 
+                          className={cn(
+                            "flex items-center justify-between p-3 rounded-lg transition-colors group",
+                            isSynced ? "opacity-60 cursor-not-allowed bg-white/2" : "hover:bg-white/5 cursor-pointer"
+                          )}
+                          onClick={() => !isSynced && handleRepoCheck(ns.id, repo.id)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <button className={cn("p-1", isSynced && "cursor-not-allowed")}>
+                              {selectedRepos.has(repo.id) || isSynced ? (
+                                <CheckCircle2 className={cn("w-4 h-4", isSynced ? "text-slate-600" : "text-cyan-400")} />
+                              ) : (
+                                <Circle className="w-4 h-4 text-slate-700" />
+                              )}
+                            </button>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className={cn("text-sm font-bold transition-colors", isSynced ? "text-slate-500" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
+                                {isSynced && (
+                                  <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded uppercase tracking-widest border border-emerald-500/20">Synced</span>
+                                )}
+                              </div>
+                              <div className="flex gap-2 items-center mt-1">
+                                {selectedRepos.has(repo.id) || isSynced ? (
+                                  <div className="flex gap-1">
+                                    {['code', 'issues', 'milestones', 'releases'].map(ent => (
                                     <button
                                       key={ent}
                                       onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
@@ -1828,10 +1872,12 @@ function AppContent() {
               <SourceSelection 
                 providers={providers} 
                 onRefresh={handleRefreshRepos} 
-                namespaces={namespaces}
-                setNamespaces={setNamespaces}
+                namespaces={namespaces} 
+                setNamespaces={setNamespaces} 
                 setProvisioningSummary={setProvisioningSummary}
+                syncMatrix={syncMatrix}
               />
+
             </motion.div>
           )}
 
@@ -1877,13 +1923,26 @@ function AppContent() {
                   >
                     <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 blur-3xl -mr-16 -mt-16 group-hover:bg-cyan-500/10 transition-all" />
                     <div className="flex justify-between items-start mb-6 relative z-10">
-                      <div className="p-4 bg-white/5 rounded-2xl group-hover:bg-cyan-500/10 transition-colors border border-white/5 relative">
-                        {p.type.includes('github') ? <Github className="w-8 h-8 text-slate-300 group-hover:text-cyan-400" /> : <Gitlab className="w-8 h-8 text-slate-300 group-hover:text-magenta-400" />}
-                        {p.isSource && (
-                          <div className="absolute -top-2 -right-2 bg-cyan-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest shadow-lg shadow-cyan-500/50">
-                            Source
-                          </div>
+                      <div className={cn(
+                        "p-4 rounded-2xl transition-colors border relative",
+                        p.isSource ? "bg-cyan-500/10 border-cyan-500/20" : "bg-white/5 border-white/5 group-hover:bg-white/10"
+                      )}>
+                        {p.type.includes('github') ? (
+                          <Github className={cn("w-8 h-8", p.isSource ? "text-cyan-400" : "text-slate-300")} />
+                        ) : p.type.includes('gitlab') ? (
+                          <Gitlab className={cn("w-8 h-8", p.isSource ? "text-magenta-400" : "text-slate-300")} />
+                        ) : (
+                          <Database className={cn("w-8 h-8", p.isSource ? "text-amber-400" : "text-slate-300")} />
                         )}
+                        
+                        <div className={cn(
+                          "absolute -top-2 -right-2 text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest shadow-lg",
+                          p.isSource 
+                            ? "bg-cyan-500 text-white shadow-cyan-500/50" 
+                            : "bg-slate-800 text-slate-400"
+                        )}>
+                          {p.isSource ? "Source" : "Target"}
+                        </div>
                       </div>
                       <div className="flex flex-col items-end">
                         <div className={cn(
