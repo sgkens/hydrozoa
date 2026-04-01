@@ -212,7 +212,10 @@ function decrypt(encryptedText: string) {
 
 async function getProviderUser(provider: any, token: string): Promise<string | null> {
   const type = provider.type.toLowerCase();
-  const baseUrl = provider.url.replace(/\/$/, '');
+  let baseUrl = provider.url.replace(/\/$/, '');
+  if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
+    baseUrl = 'https://api.github.com';
+  }
   const headers: Record<string, string> = {
     'User-Agent': 'Hydrozoa-Mirror-Agent',
     'Accept': 'application/json'
@@ -256,7 +259,10 @@ async function getProviderUser(provider: any, token: string): Promise<string | n
 
 async function provisionTargetRepository(provider: any, repoName: string, description: string, token: string) {
   const type = provider.type.toLowerCase();
-  const baseUrl = provider.url.replace(/\/$/, '');
+  let baseUrl = provider.url.replace(/\/$/, '');
+  if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
+    baseUrl = 'https://api.github.com';
+  }
   const headers: Record<string, string> = {
     'User-Agent': 'Hydrozoa-Mirror-Agent',
     'Accept': 'application/json',
@@ -430,7 +436,14 @@ const authenticateToken = (req: any, res: any, next: any) => {
 
 async function getAuthUrl(provider: any, token: string, repoName: string) {
   const type = provider.type.toLowerCase();
-  const baseUrl = provider.url.replace(/\/$/, '').replace(/^https?:\/\//, '');
+  let baseUrl = provider.url.replace(/\/$/, '').replace(/^https?:\/\//, '');
+  
+  // GitHub and Bitbucket APIs are on subdomains, but Git is on the main domain
+  if (type === 'github' && baseUrl === 'api.github.com') {
+    baseUrl = 'github.com';
+  } else if (type === 'bitbucket' && baseUrl === 'api.bitbucket.org/2.0') {
+    baseUrl = 'bitbucket.org';
+  }
   
   if (type === 'github') return `https://x-access-token:${token}@${baseUrl}/${repoName}.git`;
   if (type.includes('gitlab')) return `https://oauth2:${token}@${baseUrl}/${repoName}.git`;
@@ -979,7 +992,10 @@ async function startServer() {
 
     try {
       const token = decrypt(sourceProvider.token);
-      const baseUrl = sourceProvider.url.replace(/\/$/, '');
+      let baseUrl = sourceProvider.url.replace(/\/$/, '');
+      if (sourceProvider.type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
+        baseUrl = 'https://api.github.com';
+      }
       const headers: Record<string, string> = {
         'User-Agent': 'Hydrozoa-Mirror-Agent',
         'Accept': 'application/json'
@@ -989,7 +1005,7 @@ async function startServer() {
         headers['Authorization'] = `token ${token}`;
         sysLog.info("Fetching GitHub namespaces...");
         
-        const userRes = await fetch('https://api.github.com/user', { headers });
+        const userRes = await fetch(`${baseUrl}/user`, { headers });
         if (!userRes.ok) {
           const errText = await userRes.text();
           sysLog.error(`GitHub User API failed (${userRes.status}): ${errText}`);
@@ -998,7 +1014,7 @@ async function startServer() {
 
         const userData = await userRes.json();
         
-        const orgsRes = await fetch('https://api.github.com/user/orgs', { headers });
+        const orgsRes = await fetch(`${baseUrl}/user/orgs`, { headers });
         if (!orgsRes.ok) {
           const errText = await orgsRes.text();
           sysLog.error(`GitHub Orgs API failed (${orgsRes.status}): ${errText}`);
@@ -1117,7 +1133,10 @@ async function startServer() {
 
     try {
       const token = decrypt(sourceProvider.token);
-      const baseUrl = sourceProvider.url.replace(/\/$/, '');
+      let baseUrl = sourceProvider.url.replace(/\/$/, '');
+      if (sourceProvider.type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
+        baseUrl = 'https://api.github.com';
+      }
       const headers: Record<string, string> = {
         'User-Agent': 'Hydrozoa-Mirror-Agent',
         'Accept': 'application/json'
@@ -1125,7 +1144,7 @@ async function startServer() {
       
       if (sourceProvider.type === 'github') {
         headers['Authorization'] = `token ${token}`;
-        const url = `https://api.github.com/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=${perPage}&page=${page}`;
+        const url = `${baseUrl}/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=${perPage}&page=${page}`;
         sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
 
         const reposRes = await fetch(url, { headers });
@@ -1228,7 +1247,17 @@ async function startServer() {
     let { name, type, url, token, isSource, baseUrl, webhookSecret } = req.body;
     
     // Support both 'url' and 'baseUrl' (frontend uses baseUrl)
-    const effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : null);
+    let effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : (type === 'bitbucket' ? 'https://api.bitbucket.org/2.0' : null));
+    
+    // Auto-fix GitHub and Bitbucket standard URLs to API URLs
+    if (effectiveUrl) {
+      const normalized = effectiveUrl.replace(/\/$/, '').toLowerCase();
+      if (type === 'github' && (normalized === 'https://github.com' || normalized === 'http://github.com')) {
+        effectiveUrl = 'https://api.github.com';
+      } else if (type === 'bitbucket' && (normalized === 'https://bitbucket.org' || normalized === 'http://bitbucket.org')) {
+        effectiveUrl = 'https://api.bitbucket.org/2.0';
+      }
+    }
 
     // Basic validation
     if (!name || !type || !effectiveUrl || !token) {
@@ -1379,7 +1408,10 @@ async function startServer() {
       if (!provider) return res.status(404).json({ error: "Provider not found" });
 
       const start = Date.now();
-      const baseUrl = provider.url.replace(/\/$/, '');
+      let baseUrl = provider.url.replace(/\/$/, '');
+  if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
+    baseUrl = 'https://api.github.com';
+  }
       
       // Simple HEAD request to check reachability
       const pingRes = await fetch(baseUrl, { 
