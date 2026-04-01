@@ -1,0 +1,189 @@
+---
+---
+
+@import "minima";
+
+// --- Hydrozoa Theme Variables ---
+$deep-blue: #0a0f1a;
+$cyan-accent: #00f3ff;
+$magenta-accent: #ff00ff;
+$glass-bg: rgba(255, 255, 255, 0.05);
+$glass-border: rgba(255, 255, 255, 0.1);
+$text-color: #e2e8f0;
+$font-family: 'Inter', sans-serif;
+
+// --- Global Styles ---
+body {
+  background-color: $deep-blue;
+  color: $text-color;
+  font-family: $font-family;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+.radial-glow-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle at 50% 50%, rgba(0, 243, 255, 0.05) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+// --- Header Styles ---
+.site-header {
+  background: $glass-bg;
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid $glass-border;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.site-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 900;
+  letter-spacing: -0.05em;
+  color: white !important;
+  text-transform: uppercase;
+  
+  .logo {
+    width: 40px;
+    height: 40px;
+    filter: drop-shadow(0 0 8px rgba(0, 243, 255, 0.5));
+  }
+}
+
+.site-nav {
+  .page-link {
+    color: $text-color !important;
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    padding: 8px 12px;
+    transition: all 0.2s ease;
+    
+    &:hover {
+      color: $cyan-accent !important;
+      text-shadow: 0 0 8px rgba(0, 243, 255, 0.5);
+    }
+  }
+}
+
+// --- Content Styles ---
+.wrapper {
+  max-width: 1000px;
+  padding: 0 20px;
+}
+
+h1, h2, h3, h4 {
+  color: white;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  margin-top: 2em;
+}
+
+h1 {
+  font-size: 3rem;
+  background: linear-gradient(to right, $cyan-accent, $magenta-accent);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 0.5em;
+}
+
+h2 {
+  border-bottom: 1px solid $glass-border;
+  padding-bottom: 0.5em;
+  font-size: 1.5rem;
+}
+
+p, li {
+  line-height: 1.6;
+  color: #94a3b8;
+}
+
+a {
+  color: $cyan-accent;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  
+  &:hover {
+    text-decoration: underline;
+    text-shadow: 0 0 8px rgba(0, 243, 255, 0.3);
+  }
+}
+
+// --- Glass Cards for Documentation ---
+.glass-card {
+  background: $glass-bg;
+  backdrop-filter: blur(20px);
+  border: 1px solid $glass-border;
+  border-radius: 16px;
+  padding: 24px;
+  margin: 24px 0;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+// --- Code Blocks ---
+code, pre {
+  font-family: 'JetBrains Mono', monospace;
+  background: rgba(0, 0, 0, 0.3) !important;
+  border-radius: 8px;
+}
+
+pre {
+  padding: 16px;
+  border: 1px solid $glass-border;
+  overflow-x: auto;
+}
+
+.highlight {
+  background: transparent !important;
+}
+
+// --- Buttons ---
+.btn {
+  display: inline-block;
+  padding: 12px 24px;
+  background: $cyan-accent;
+  color: $deep-blue !important;
+  font-weight: 900;
+  text-transform: uppercase;
+  border-radius: 8px;
+  letter-spacing: 0.05em;
+  box-shadow: 0 0 20px rgba(0, 243, 255, 0.3);
+  transition: all 0.2s ease;
+  
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 0 30px rgba(0, 243, 255, 0.5);
+    text-decoration: none;
+  }
+}
+
+// --- Mobile First Adjustments ---
+@media (max-width: 600px) {
+  h1 {
+    font-size: 2rem;
+  }
+  
+  .site-title {
+    font-size: 1rem;
+  }
+  
+  .site-nav {
+    .trigger {
+      background: $deep-blue;
+      border: 1px solid $glass-border;
+    }
+  }
+}

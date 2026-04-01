@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  hydrozoa:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../.env
+    restart: always
+    environment:
+      - NODE_ENV=production

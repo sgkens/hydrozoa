@@ -1,93 +1,124 @@
-# Hydrozoa
+# 🪼 Hydrozoa
 
+[![GitLab CI](https://img.shields.io/badge/gitlab%20ci-passed-brightgreen)](https://gitlab.com) [![Docker](https://img.shields.io/badge/docker-alpine-blue)](https://www.docker.com/) [![Kubernetes](https://img.shields.io/badge/kubernetes-ready-blue)](https://kubernetes.io/) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
+**Hydrozoa** is a high-performance repository mirroring engine designed to synchronize code across multiple Git providers (GitHub, GitLab, Gogs, Gitea, Forgejo, Bitbucket) with deep-sea precision and real-time telemetry.
 
-## Getting started
+---
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## **Features**
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- **Multi-Provider Mirroring**: Sync repositories between GitHub, GitLab, Gogs, Gitea, Forgejo, and Bitbucket.
+- **Bioluminescent Dashboard**: Real-time telemetry and sync metrics visualized with high-end animations.
+- **Source Selection Matrix**: Hierarchical selection of namespaces and repositories for granular mirroring control.
+- **Dead Letter Queue (DLQ)**: Automatic capture of failed syncs with one-click replay functionality.
+- **Bilingual Logs**: Logs translated into both human-readable resolutions and technical stack traces.
+- **Bidirectional Sync**: Support for two-way synchronization between providers.
+- **AES-256-GCM Encryption**: All provider tokens are encrypted at rest using industry-standard encryption.
+- **JWT Authentication**: Secure access control for all API and UI interactions.
+- **Conflict Resolution**: Configurable strategies (Source Wins, Target Wins, Latest Commit, Manual).
 
-## Add your files
+---
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## **Installation**
 
+### 1. Bare Metal (Linux / macOS)
+Ensure you have **Node.js v20+** installed.
+
+```bash
+# Run the automated installer
+chmod +x install.sh
+./install.sh
+
+# Start the application
+npm start
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/sgkens/hydrozoa.git
-git branch -M main
-git push -uf origin main
+
+### 2. Bare Metal (Windows)
+Ensure you have **Node.js v20+** installed.
+
+```powershell
+# Run the automated installer
+.\install.ps1
+
+# Start the application
+npm start
 ```
 
-## Integrate with your tools
+### 3. Docker
+```bash
+# Using the helper script
+chmod +x docker/docker-run.sh
+./docker/docker-run.sh
 
-* [Set up project integrations](https://gitlab.com/sgkens/hydrozoa/-/settings/integrations)
+# OR using Docker Compose
+docker-compose -f docker/docker-compose.yaml up -d
+```
 
-## Collaborate with your team
+### 4. Kubernetes
+```bash
+# Apply the manifests
+kubectl apply -f kubernetes/deployment.yaml
+```
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+---
 
-## Test and Deploy
+## **Configuration**
 
-Use the built-in continuous integration in GitLab.
+Hydrozoa uses environment variables for core security. Create a `.env` file in the root:
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```env
+JWT_SECRET=your-secure-jwt-secret
+HYDROZOA_MASTER_KEY=32-character-long-master-key-!!
+NODE_ENV=production
+```
 
-***
+---
 
-# Editing this README
+## **API Reference**
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Hydrozoa is built with a "Headless First" philosophy. You can bypass the GUI entirely using the REST API.
 
-## Suggestions for a good README
+### **Authentication**
+All requests (except login) require a `Bearer` token in the `Authorization` header.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+**POST** `/api/v1/auth/login`
+```json
+{
+  "email": "admin@hydrozoa.io",
+  "password": "hydrozoa-default"
+}
+```
+*Returns:* `{ "token": "...", "user": { ... } }`
 
-## Name
-Choose a self-explaining name for your project.
+### **System Telemetry**
+- **GET** `/api/v1/system/sync-matrix`: Retrieve the current status of all mirror pairs.
+- **GET** `/api/v1/system/dlq`: List items in the Dead Letter Queue.
+- **POST** `/api/v1/system/dlq/:id/replay`: Re-trigger a failed sync operation.
+- **GET** `/health`: Check system health and database connectivity.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+### **Provider Management**
+- **GET** `/api/v1/auth/providers`: List configured Git providers.
+- **POST** `/api/v1/auth/providers`: Register a new provider (tokens will be encrypted).
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+### **Logs & Analytics**
+- **GET** `/api/v1/logs/translated`: Fetch logs with human-readable resolutions.
+- **GET** `/api/v1/analytics/sync-metrics`: Get time-series data for sync performance.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+---
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## **Help & Troubleshooting**
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+| Issue | Resolution |
+|-------|------------|
+| **Decryption Failed** | Ensure `HYDROZOA_MASTER_KEY` matches the key used during provider registration. |
+| **401 Unauthorized** | Your JWT has expired. Re-authenticate via the login endpoint. |
+| **Sync Timeout** | Check the target provider's rate limits or network connectivity. |
+| **Docker Build Error** | Ensure you are using the `node:20-alpine` base image as specified in the Dockerfile. |
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+For further assistance, please open an issue in the GitLab repository or contact the maintainers.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+---
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+## **License**
+Distributed under the MIT License. See `LICENSE` for more information.
