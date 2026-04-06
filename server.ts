@@ -286,6 +286,8 @@ async function getProviderUser(provider: any, token: string): Promise<string | n
   let baseUrl = provider.url.replace(/\/$/, '');
   if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
     baseUrl = 'https://api.github.com';
+  } else if (type === 'bitbucket' && (baseUrl === 'https://bitbucket.org' || baseUrl === 'http://bitbucket.org' || baseUrl === 'https://api.bitbucket.org/2.0')) {
+    baseUrl = 'https://api.bitbucket.org';
   }
   const headers: Record<string, string> = {
     'User-Agent': 'Hydrozoa-Mirror-Agent',
@@ -343,6 +345,8 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   let baseUrl = provider.url.replace(/\/$/, '');
   if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
     baseUrl = 'https://api.github.com';
+  } else if (type === 'bitbucket' && (baseUrl === 'https://bitbucket.org' || baseUrl === 'http://bitbucket.org' || baseUrl === 'https://api.bitbucket.org/2.0')) {
+    baseUrl = 'https://api.bitbucket.org';
   }
   const headers: Record<string, string> = {
     'User-Agent': 'Hydrozoa-Mirror-Agent',
@@ -522,7 +526,7 @@ async function getAuthUrl(provider: any, token: string, repoName: string) {
   // GitHub and Bitbucket APIs are on subdomains, but Git is on the main domain
   if (type === 'github' && baseUrl === 'api.github.com') {
     baseUrl = 'github.com';
-  } else if (type === 'bitbucket' && baseUrl === 'api.bitbucket.org/2.0') {
+  } else if (type === 'bitbucket' && baseUrl === 'api.bitbucket.org') {
     baseUrl = 'bitbucket.org';
   }
   
@@ -1500,15 +1504,15 @@ async function startServer() {
     let { name, type, url, token, isSource, baseUrl, webhookSecret } = req.body;
     
     // Support both 'url' and 'baseUrl' (frontend uses baseUrl)
-    let effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : (type === 'bitbucket' ? 'https://api.bitbucket.org/2.0' : null));
+    let effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : (type === 'bitbucket' ? 'https://api.bitbucket.org' : null));
     
     // Auto-fix GitHub and Bitbucket standard URLs to API URLs
     if (effectiveUrl) {
       const normalized = effectiveUrl.replace(/\/$/, '').toLowerCase();
       if (type === 'github' && (normalized === 'https://github.com' || normalized === 'http://github.com')) {
         effectiveUrl = 'https://api.github.com';
-      } else if (type === 'bitbucket' && (normalized === 'https://bitbucket.org' || normalized === 'http://bitbucket.org')) {
-        effectiveUrl = 'https://api.bitbucket.org/2.0';
+      } else if (type === 'bitbucket' && (normalized === 'https://bitbucket.org' || normalized === 'http://bitbucket.org' || normalized === 'https://api.bitbucket.org/2.0')) {
+        effectiveUrl = 'https://api.bitbucket.org';
       }
     }
 
