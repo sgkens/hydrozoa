@@ -24,7 +24,9 @@ import {
   LogOut,
   Flag,
   Tag,
-  Book
+  Book,
+  Copy,
+  Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -233,21 +235,84 @@ const StatCard = ({ title, value, icon: Icon, color, delay }: { title: string, v
   </motion.div>
 );
 
+const ReactionButton = ({ 
+  children, 
+  onClick, 
+  isLoading, 
+  className, 
+  disabled, 
+  variant = 'primary',
+  icon: Icon,
+  type = 'button'
+}: { 
+  children: React.ReactNode, 
+  onClick?: () => void, 
+  isLoading?: boolean, 
+  className?: string, 
+  disabled?: boolean,
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger',
+  icon?: any,
+  type?: 'button' | 'submit' | 'reset'
+}) => {
+  const variants = {
+    primary: "bg-cyan-500 text-white hover:bg-cyan-400 glow-cyan",
+    secondary: "bg-magenta-500 text-white hover:bg-magenta-400 glow-magenta",
+    ghost: "bg-white/5 text-slate-300 hover:bg-white/10 border border-white/10",
+    danger: "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20"
+  };
+
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled || isLoading}
+      className={cn(
+        "relative flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 overflow-hidden group",
+        variants[variant],
+        className
+      )}
+    >
+      {isLoading && (
+        <motion.div 
+          className="absolute inset-0 bg-white/10 flex items-center justify-center"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+        >
+          <RefreshCw className="w-4 h-4 animate-spin text-white" />
+        </motion.div>
+      )}
+      <div className={cn("flex items-center gap-2 transition-all", isLoading ? "opacity-0 scale-90" : "opacity-100 scale-100")}>
+        {Icon && <Icon className={cn("w-3.5 h-3.5", !isLoading && "group-hover:rotate-12 transition-transform")} />}
+        {children}
+      </div>
+    </button>
+  );
+};
+
 const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void, onUpdate: () => void }) => {
   const getProvider = (id: string) => providers.find(p => p.id === id);
   const [selectedItem, setSelectedItem] = useState<SyncMatrixItem | null>(null);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+
+  const handleSyncAll = async () => {
+    setIsSyncingAll(true);
+    await Promise.all(items.map(item => onManualSync(item.id)));
+    setTimeout(() => setIsSyncingAll(false), 2000);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center mb-2">
         <h3 className="text-xl font-black text-white uppercase tracking-tighter">Sync Matrix</h3>
-        <button
-          onClick={() => items.forEach(item => onManualSync(item.id))}
-          className="flex items-center gap-2 px-4 py-2 bg-white/5 text-cyan-400 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/10 transition-all border border-cyan-500/20"
+        <ReactionButton
+          onClick={handleSyncAll}
+          isLoading={isSyncingAll}
+          icon={RefreshCw}
+          variant="ghost"
+          className="text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/10"
         >
-          <RefreshCw className="w-3 h-3" />
           Sync All Nodes
-        </button>
+        </ReactionButton>
       </div>
       <AnimatePresence>
         {selectedItem && (
@@ -426,6 +491,54 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
   );
 };
 
+const LogItem: React.FC<{ log: Log }> = ({ log }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="group relative"
+    >
+      <div className="flex gap-3">
+        <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+        <span className={cn(
+          "font-bold uppercase tracking-tighter shrink-0",
+          log.level === 'error' ? 'text-red-400' : 'text-amber-400'
+        )}>{log.level}</span>
+        <div className="flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-slate-300 leading-relaxed">{log.ui_message}</p>
+            <button 
+              onClick={() => handleCopy(`${log.ui_message}\n\nTechnical Context:\n${log.technical_context}`)}
+              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-white/5 hover:bg-white/10 rounded border border-white/10"
+              title="Copy details"
+            >
+              {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+            </button>
+          </div>
+          <div className="mt-1 p-2 bg-black/40 rounded border border-white/5 hidden group-hover:block transition-all">
+            <p className="text-[10px] text-cyan-400/70 mb-1 font-black uppercase tracking-widest">Technical Context</p>
+            <code className="text-slate-500 break-all">{log.technical_context}</code>
+            {log.resolution && (
+              <div className="mt-2 pt-2 border-t border-white/5">
+                <p className="text-[10px] text-emerald-400/70 mb-1 font-black uppercase tracking-widest">Suggested Resolution</p>
+                <p className="text-slate-400 italic">{log.resolution}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
 const LogViewer = ({ logs }: { logs: Log[] }) => {
   return (
     <div className="glass-card overflow-hidden border-white/5 bg-black/40">
@@ -443,33 +556,7 @@ const LogViewer = ({ logs }: { logs: Log[] }) => {
       </div>
       <div className="p-4 space-y-3 font-mono text-[11px] max-h-[500px] overflow-y-auto">
         {logs.map((log, i) => (
-          <motion.div 
-            key={i}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="group"
-          >
-            <div className="flex gap-3">
-              <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-              <span className={cn(
-                "font-bold uppercase tracking-tighter shrink-0",
-                log.level === 'error' ? 'text-red-400' : 'text-amber-400'
-              )}>{log.level}</span>
-              <div className="flex-1">
-                <p className="text-slate-300 leading-relaxed">{log.ui_message}</p>
-                <div className="mt-1 p-2 bg-black/40 rounded border border-white/5 hidden group-hover:block transition-all">
-                  <p className="text-[10px] text-cyan-400/70 mb-1 font-black uppercase tracking-widest">Technical Context</p>
-                  <code className="text-slate-500 break-all">{log.technical_context}</code>
-                  {log.resolution && (
-                    <div className="mt-2 pt-2 border-t border-white/5">
-                      <p className="text-[10px] text-emerald-400/70 mb-1 font-black uppercase tracking-widest">Suggested Resolution</p>
-                      <p className="text-slate-400 italic">{log.resolution}</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </motion.div>
+          <LogItem key={i} log={log} />
         ))}
       </div>
     </div>
@@ -745,20 +832,21 @@ const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem
 
         <div className="p-4 border-t border-white/5 bg-white/5 flex justify-end gap-3">
           {activeSubTab === 'settings' && (
-            <button
+            <ReactionButton
               onClick={handleSaveSettings}
               disabled={isUpdating}
-              className="px-8 py-2 bg-cyan-500 hover:bg-cyan-400 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all glow-cyan disabled:opacity-50"
+              isLoading={isUpdating}
+              variant="primary"
             >
               {isUpdating ? 'Saving...' : 'Apply Changes'}
-            </button>
+            </ReactionButton>
           )}
-          <button
+          <ReactionButton
             onClick={onClose}
-            className="px-6 py-2 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all"
+            variant="ghost"
           >
             Close Management
-          </button>
+          </ReactionButton>
         </div>
       </motion.div>
     </motion.div>
@@ -1100,7 +1188,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
           <div>
             <h3 className="text-xl font-black text-white uppercase tracking-tighter">Source Selection</h3>
             <div className="flex gap-2 mt-1">
-              {['code', 'issues', 'milestones', 'wiki', 'releases'].map(entity => (
+              {['code', 'issues', 'milestones', 'wiki', 'releases', 'snippets'].map(entity => (
                 <button
                   key={entity}
                   onClick={() => toggleEntity(entity)}
@@ -1120,33 +1208,38 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             {sourceProvider && (
-              <button 
+              <ReactionButton 
                 onClick={onRefresh}
-                className="px-4 py-2 bg-white/5 text-cyan-400 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/10 transition-all border border-cyan-500/20 flex items-center gap-2"
+                isLoading={isLoadingRepos[namespaces[0]?.id]} // Or a general isRefreshing state
+                icon={RefreshCw}
+                variant="ghost"
+                className="text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/10"
               >
-                <RefreshCw className="w-3 h-3" />
                 Refresh Repos
-              </button>
+              </ReactionButton>
             )}
-            <button 
+            <ReactionButton 
               onClick={saveSelection}
-              disabled={isSaving || !sourceProvider}
-              className="px-6 py-2 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-400 transition-all glow-cyan disabled:opacity-50"
+              disabled={!sourceProvider}
+              isLoading={isSaving}
+              variant="primary"
+              className="px-6"
             >
               {isSaving ? 'Provisioning...' : 'Initiate Mirroring'}
-            </button>
-            <button 
+            </ReactionButton>
+            <ReactionButton 
               onClick={selectAll}
-              className="text-[9px] font-black text-cyan-400 uppercase tracking-widest hover:text-white transition-colors border border-cyan-500/20 px-3 py-2 rounded-lg"
+              variant="ghost"
+              className="text-cyan-400 border-cyan-500/20"
             >
               Select All
-            </button>
-            <button 
+            </ReactionButton>
+            <ReactionButton 
               onClick={deselectAll}
-              className="text-[9px] font-black text-slate-500 uppercase tracking-widest hover:text-white transition-colors border border-white/5 px-3 py-2 rounded-lg"
+              variant="ghost"
             >
               Deselect All
-            </button>
+            </ReactionButton>
           </div>
         </div>
       </div>
@@ -1231,7 +1324,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                                 {isSelected ? (
                                   <div className="flex items-center gap-2">
                                     <div className="flex gap-1">
-                                      {['code', 'issues', 'milestones', 'releases'].map(ent => (
+                                      {['code', 'issues', 'milestones', 'releases', 'snippets'].map(ent => (
                                         <button
                                           key={ent}
                                           onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
@@ -1246,6 +1339,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                                         </button>
                                       ))}
                                     </div>
+
                                     <div className="flex items-center gap-1 ml-2 bg-black/20 px-2 py-0.5 rounded border border-white/5">
                                       <Terminal className="w-2 h-2 text-slate-500" />
                                       <input 
@@ -1943,6 +2037,69 @@ function AppContent() {
                   </div>
                 </div>
               </div>
+
+              <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+                    <RefreshCw className="w-6 h-6 text-cyan-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-white uppercase tracking-tighter">Active Synchronizations</h3>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Real-time status of running operations</p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).length === 0 ? (
+                    <div className="col-span-full py-8 text-center bg-black/20 rounded-2xl border border-dashed border-white/5">
+                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">No operations currently running</p>
+                    </div>
+                  ) : (
+                    syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).map((item, idx) => (
+                      <motion.div
+                        key={item.id}
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ delay: idx * 0.1 }}
+                        className="p-4 rounded-xl bg-white/5 border border-cyan-500/20 relative overflow-hidden group"
+                      >
+                        <div className="absolute top-0 right-0 w-16 h-16 blur-2xl -mr-8 -mt-8 bg-cyan-500/20 animate-pulse" />
+                        <div className="flex items-center justify-between mb-3 relative z-10">
+                          <p className="text-sm font-black text-white truncate max-w-[70%]">{item.source_repo}</p>
+                          <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-[8px] font-black uppercase tracking-widest rounded shadow-[0_0_10px_rgba(0,243,255,0.2)] animate-pulse">Syncing</span>
+                        </div>
+                        <div className="flex gap-1 flex-wrap mb-4 relative z-10">
+                          {(item.entities || ['code']).map(ent => (
+                            <span key={ent} className="px-1.5 py-0.5 bg-white/10 text-slate-400 text-[8px] font-black uppercase tracking-tighter rounded border border-white/10">
+                              {ent}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="space-y-2 relative z-10">
+                          {item.targets.filter(t => t.status === 'syncing').map((target, tIdx) => {
+                            const p = providers.find(prov => prov.id === target.provider_id);
+                            return (
+                              <div key={tIdx} className="flex flex-col gap-1.5 p-2 bg-black/40 rounded-lg">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p?.name || 'Unknown'}</span>
+                                  <span className="text-[9px] font-mono text-cyan-400">{target.progress || 0}%</span>
+                                </div>
+                                <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${target.progress || 0}%` }}
+                                    className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,243,255,0.5)]"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </motion.div>
+                    ))
+                  )}
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -2469,8 +2626,8 @@ function AppContent() {
                         </div>
                         <p className="text-xs text-slate-500 leading-relaxed">Purging logs or resetting the sync matrix is irreversible. Proceed with extreme caution.</p>
                         <div className="flex gap-3">
-                          <button className="flex-1 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-red-500/20">Clear Logs</button>
-                          <button className="flex-1 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-red-500/20">Reset Matrix</button>
+                          <ReactionButton variant="danger" className="flex-1" onClick={() => alert("Logs Cleared")}>Clear Logs</ReactionButton>
+                          <ReactionButton variant="danger" className="flex-1" onClick={() => alert("Matrix Reset")}>Reset Matrix</ReactionButton>
                         </div>
                       </div>
                     </div>
@@ -2532,19 +2689,20 @@ function AppContent() {
                         </div>
                       )}
 
-                      <button 
+                      <ReactionButton 
                         type="submit"
-                        className="w-full py-4 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-white/10"
+                        variant="ghost"
+                        className="w-full py-4"
                       >
                         Update Security Credentials
-                      </button>
+                      </ReactionButton>
                     </form>
                   </div>
                 </div>
               </div>
 
               <div className="flex justify-end">
-                <button 
+                <ReactionButton 
                   onClick={async () => {
                     const res = await fetchWithAuth('/api/v1/system/settings', {
                       method: 'POST',
@@ -2554,11 +2712,13 @@ function AppContent() {
                       alert("Configuration Synchronized Successfully");
                     }
                   }}
-                  className="px-12 py-4 bg-gradient-to-r from-cyan-500 to-magenta-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:scale-105 active:scale-95 transition-all glow-cyan"
+                  variant="primary"
+                  className="px-12 py-4 bg-gradient-to-r from-cyan-500 to-magenta-500 hover:scale-105 active:scale-95"
                 >
                   Save System Configuration
-                </button>
+                </ReactionButton>
               </div>
+
             </motion.div>
           )}
         </AnimatePresence>

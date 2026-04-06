@@ -333,7 +333,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   const isPrivate = visibility === 'private';
   
   // Append mirror link to description if available
-  let finalDescription = description;
+  let finalDescription = (description || "").replace(/[\x00-\x1F\x7F]/g, ' ');
   if (sourceUrl) {
     const mirrorNote = `\n\nManaged by Hydrozoa - Mirrored from: ${sourceUrl}`;
     if (!finalDescription.includes(mirrorNote)) {
@@ -861,6 +861,99 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
   }
 }
 
+async function syncSnippets(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+  const sourceBase = source.url.replace(/\/$/, "");
+  const targetBase = target.url.replace(/\/$/, "");
+  const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
+  const headersTarget: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json", "Content-Type": "application/json" };
+
+  Object.assign(headersSource, getProviderHeaders(source, sourceToken));
+  Object.assign(headersTarget, getProviderHeaders(target, targetToken));
+
+  try {
+    let sourceSnippets = [];
+    const sourcePath = source.type.toLowerCase().includes("gitlab")
+      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/snippets?per_page=100`
+      : source.type.toLowerCase() === "github"
+        ? `${sourceBase}/gists?per_page=100` // GitHub Gists are global, but we try to match by name
+        : source.type.toLowerCase() === "bitbucket"
+          ? `${sourceBase}/2.0/repositories/${repoName}/snippets?pagelen=100`
+          : `${sourceBase}/api/v1/repos/${repoName}/snippets?per_page=100`;
+
+    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
+    if (resSource.ok) {
+      const data = await resSource.json();
+      sourceSnippets = Array.isArray(data) ? data : (data.values || []);
+    }
+
+    if (!Array.isArray(sourceSnippets)) return false;
+
+    let targetSnippets = [];
+    const targetPath = target.type.toLowerCase().includes("gitlab")
+      ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/snippets?per_page=100`
+      : target.type.toLowerCase() === "github"
+        ? `${targetBase}/gists?per_page=100`
+        : target.type.toLowerCase() === "bitbucket"
+          ? `${targetBase}/2.0/repositories/${repoName}/snippets?pagelen=100`
+          : `${targetBase}/api/v1/repos/${repoName}/snippets?per_page=100`;
+
+    const resTarget = await trackedFetch(target.id, targetPath, { headers: headersTarget });
+    if (resTarget.ok) {
+      const data = await resTarget.json();
+      targetSnippets = Array.isArray(data) ? data : (data.values || []);
+    }
+
+    const existingTitles = new Set(targetSnippets.map((s: any) => s.title || s.description || "Untitled"));
+    let created = 0;
+    let skipped = 0;
+
+    for (const snip of sourceSnippets) {
+      const title = snip.title || snip.description || "Untitled";
+      const fileName = snip.file_name || (snip.files ? Object.keys(snip.files)[0] : "snippet.txt");
+      const content = snip.content || (snip.files && snip.files[fileName] ? snip.files[fileName].content : "");
+
+      if (existingTitles.has(title)) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        let createRes;
+        if (target.type.toLowerCase().includes("gitlab")) {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/snippets`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, file_name: fileName, content, visibility: 'private' })
+          });
+        } else if (target.type.toLowerCase() === "github") {
+          createRes = await trackedFetch(target.id, `${targetBase}/gists`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ description: title, public: false, files: { [fileName]: { content } } })
+          });
+        } else if (target.type.toLowerCase() === "bitbucket") {
+          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/snippets`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, text: content })
+          });
+        }
+
+        if (createRes && createRes.ok) {
+          created++;
+        }
+      } catch (e) {
+        sysLog.error(`Error creating snippet "${title}" on ${target.name}: ${e}`);
+      }
+    }
+    sysLog.success(`Snippet sync complete for ${repoName}: ${created} created, ${skipped} skipped.`);
+    return true;
+  } catch (err) {
+    sysLog.error(`Snippet sync failed for ${repoName}: ${err}`);
+    return false;
+  }
+}
+
 async function processSyncItem(item: any) {
   // Fetch latest settings
   const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
@@ -896,6 +989,7 @@ async function processSyncItem(item: any) {
         if (entities.includes('issues')) await syncIssues(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
         if (entities.includes('milestones')) await syncMilestones(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
         if (entities.includes('releases')) await syncReleases(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        if (entities.includes('snippets')) await syncSnippets(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
       }
 
       targetRef.progress = 60;
@@ -907,6 +1001,7 @@ async function processSyncItem(item: any) {
 
       if (entities.includes('milestones')) await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       if (entities.includes('releases')) await syncReleases(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      if (entities.includes('snippets')) await syncSnippets(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       
       targetRef.status = 'synced';
       targetRef.progress = 100;
