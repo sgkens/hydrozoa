@@ -36,11 +36,12 @@ interface Namespace {
   type: string;
   repo_count: number;
 }
-
 interface Repository {
   id: string;
   name: string;
   description: string;
+  visibility: 'public' | 'private' | 'internal';
+  web_url?: string;
 }
 interface Provider {
   id: string;
@@ -327,7 +328,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
 
               <div className="col-span-1">
                 <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-[10px] font-black text-cyan-400 uppercase tracking-widest">
+                  <div className="flex items-center gap-2 text-[10px] font-black text-magenta-400 uppercase tracking-widest">
                     <Terminal className="w-3 h-3" />
                     {item.branch || 'main'}
                   </div>
@@ -336,7 +337,6 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
                   </div>
                 </div>
               </div>
-
               <div className="col-span-1">
                 <div className="space-y-1">
                   <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Duration: {item.last_sync_duration || 'N/A'}</div>
@@ -669,7 +669,9 @@ const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem
         <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/5">
           <div>
             <h3 className="text-xl font-black text-white uppercase tracking-tighter">Mirror Management</h3>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">{item.source_repo} • {item.branch}</p>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
+              {item.source_repo} • <span className="text-magenta-400">{item.branch || 'main'}</span>
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <div className="flex bg-black/40 rounded-lg p-1 border border-white/5">
@@ -792,6 +794,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   const [selectedTargetProviders, setSelectedTargetProviders] = useState<Set<string>>(new Set());
   const [syncEntities, setSyncEntities] = useState<string[]>(["code"]);
   const [repoEntities, setRepoEntities] = useState<Record<string, string[]>>({});
+  const [repoBranches, setRepoBranches] = useState<Record<string, string>>({});
 
   const [isSaving, setIsSaving] = useState(false);
 
@@ -829,6 +832,10 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         : [...current, entity];
       return { ...prev, [repoId]: updated };
     });
+  };
+
+  const updateRepoBranch = (repoId: string, branch: string) => {
+    setRepoBranches(prev => ({ ...prev, [repoId]: branch }));
   };
 
   const sourceProvider = providers.find(p => p.isSource);
@@ -960,7 +967,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
           const repo = repos[nsId].find(r => r.id === id);
           if (repo) return repo;
         }
-        return { id, name: `repo-${id}`, description: "Automated mirror target" }; // Fallback
+        return { id, name: `repo-${id}`, description: "Automated mirror target", visibility: 'private' as const }; // Fallback
       });
 
       const res = await fetchWithAuth('/api/v1/source/selection', {
@@ -968,7 +975,8 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         body: JSON.stringify({ 
           selectedRepos: selectedRepoObjects.map(r => ({
             ...r,
-            entities: repoEntities[r.id] || syncEntities
+            entities: repoEntities[r.id] || syncEntities,
+            branch: repoBranches[r.id] || 'main'
           })),
           targetProviderIds: Array.from(selectedTargetProviders),
           entities: syncEntities // Global default
@@ -1030,7 +1038,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                   )}>{p.name}</p>
                   <span className={cn(
                     "text-[7px] font-black px-1 py-0.5 rounded uppercase tracking-tighter",
-                    p.isSource ? "bg-magenta-500/20 text-magenta-400" : "bg-cyan-500/20 text-cyan-400"
+                    p.isSource ? "bg-amber-500/20 text-amber-400" : "bg-cyan-500/20 text-cyan-400"
                   )}>
                     {p.isSource ? "Source" : "Target"}
                   </span>
@@ -1156,12 +1164,15 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                           key={repo.id} 
                           className={cn(
                             "flex items-center justify-between p-3 rounded-lg transition-colors group",
-                            isSynced ? "opacity-60 cursor-not-allowed bg-white/2" : "hover:bg-white/5 cursor-pointer"
+                            isSynced ? "bg-white/2" : "hover:bg-white/5 cursor-pointer"
                           )}
-                          onClick={() => !isSynced && handleRepoCheck(ns.id, repo.id)}
+                          onClick={() => handleRepoCheck(ns.id, repo.id)}
                         >
                           <div className="flex items-center gap-3">
-                            <button className={cn("p-1", isSynced && "cursor-not-allowed")}>
+                            <button 
+                              className="p-1"
+                              onClick={(e) => { e.stopPropagation(); handleRepoCheck(ns.id, repo.id); }}
+                            >
                               {selectedRepos.has(repo.id) || isSynced ? (
                                 <CheckCircle2 className={cn("w-4 h-4", isSynced ? "text-slate-600" : "text-cyan-400")} />
                               ) : (
@@ -1171,38 +1182,58 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                             <div>
                               <div className="flex items-center gap-2">
                                 <p className={cn("text-sm font-bold transition-colors", isSynced ? "text-slate-500" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
+                                <span className={cn(
+                                  "text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter border",
+                                  repo.visibility === 'public' ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border-amber-500/20"
+                                )}>
+                                  {repo.visibility}
+                                </span>
                                 {isSynced && (
                                   <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded uppercase tracking-widest border border-emerald-500/20">Synced</span>
                                 )}
                               </div>
                               <div className="flex gap-2 items-center mt-1">
-                                {selectedRepos.has(repo.id) || isSynced ? (
-                                  <div className="flex gap-1">
-                                    {['code', 'issues', 'milestones', 'releases'].map(ent => (
-                                    <button
-                                      key={ent}
-                                      onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
-                                      className={cn(
-                                        "px-1.5 py-0.5 rounded-[4px] text-[7px] font-black uppercase tracking-tighter border transition-all",
-                                        (repoEntities[repo.id] || syncEntities).includes(ent)
-                                          ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
-                                          : "bg-white/5 border-white/10 text-slate-600 hover:border-white/20"
-                                      )}
-                                    >
-                                      {ent}
-                                    </button>
-                                  ))}
-                                </div>
-                              ) : (
-                                <p className="text-[10px] text-slate-600 font-medium">{repo.description}</p>
-                              )}
+                                {(selectedRepos.has(repo.id) || isSynced) ? (
+                                  <div className="flex items-center gap-2">
+                                    <div className="flex gap-1">
+                                      {['code', 'issues', 'milestones', 'releases'].map(ent => (
+                                        <button
+                                          key={ent}
+                                          onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
+                                          className={cn(
+                                            "px-1.5 py-0.5 rounded-[4px] text-[7px] font-black uppercase tracking-tighter border transition-all",
+                                            (repoEntities[repo.id] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.entities : syncEntities) || []).includes(ent)
+                                              ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
+                                              : "bg-white/5 border-white/10 text-slate-600 hover:border-white/20"
+                                          )}
+                                        >
+                                          {ent}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <div className="flex items-center gap-1 ml-2 bg-black/20 px-2 py-0.5 rounded border border-white/5">
+                                      <Terminal className="w-2 h-2 text-slate-500" />
+                                      <input 
+                                        placeholder="branch"
+                                        className="bg-transparent border-none text-[8px] text-magenta-400 font-black uppercase tracking-widest focus:ring-0 w-16 p-0"
+                                        value={repoBranches[repo.id] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.branch : 'main') || 'main'}
+                                        onChange={(e) => updateRepoBranch(repo.id, e.target.value)}
+                                        onClick={(e) => e.stopPropagation()}
+                                      />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="text-[10px] text-slate-600 font-medium">{repo.description}</p>
+                                )}
+                              </div>
                             </div>
                           </div>
+                          {!isSynced && selectedRepos.has(repo.id) && (
+                            <div className="text-[10px] font-black text-cyan-500/50 uppercase tracking-widest animate-pulse">
+                              Pending Mirror
+                            </div>
+                          )}
                         </div>
-                        <div className="text-[10px] font-black text-slate-700 uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
-                          Mirror Active
-                        </div>
-                      </div>
                     );})}
                     
                     {hasMoreRepos[ns.id] && (

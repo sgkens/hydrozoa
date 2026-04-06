@@ -1,7 +1,7 @@
 {
   "name": "hydrozoa",
   "private": true,
-  "version": "0.0.0-development",
+  "version": "1.2.2",
   "type": "module",
   "scripts": {
     "dev": "tsx --env-file=.env server.ts",
@@ -10,7 +10,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "migrate": "node --env-file=.env -e 'import(\"./server.js\")'",
-    "start": "node --env-file=.env server.ts"
+    "start": "tsx --env-file=.env server.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

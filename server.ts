@@ -1,5 +1,3 @@
-import dotenv from "dotenv";
-dotenv.config({ override: true });
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -154,7 +152,36 @@ async function initDb() {
         name TEXT NOT NULL,
         is_default_password BOOLEAN DEFAULT TRUE
       );
+
+      CREATE TABLE IF NOT EXISTS system_settings (
+        id INTEGER PRIMARY KEY,
+        sync_interval INTEGER DEFAULT 15,
+        encryption_enabled BOOLEAN DEFAULT TRUE,
+        log_retention_days INTEGER DEFAULT 7,
+        max_concurrent_syncs INTEGER DEFAULT 5,
+        bidirectional_sync BOOLEAN DEFAULT FALSE,
+        conflict_strategy TEXT DEFAULT 'source_wins'
+      );
+
+      CREATE TABLE IF NOT EXISTS api_metrics (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        endpoint TEXT NOT NULL,
+        method TEXT NOT NULL,
+        status_code INTEGER,
+        rate_limit_limit INTEGER,
+        rate_limit_remaining INTEGER,
+        rate_limit_reset TIMESTAMP,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
     `);
+
+    // Seed default settings if not exists
+    const settingsCheck = await pool.query('SELECT * FROM system_settings WHERE id = 1');
+    if (settingsCheck.rows.length === 0) {
+      await pool.query('INSERT INTO system_settings (id) VALUES (1)');
+    }
 
     // Seed default user if not exists
     const userCheck = await pool.query('SELECT * FROM users WHERE email = $1', ["admin@hydrozoa.io"]);
@@ -186,6 +213,41 @@ async function addLog(log: any) {
   );
 }
 
+async function trackedFetch(providerId: string, url: string, options: any) {
+  try {
+    const res = await fetch(url, options);
+    
+    // Extract rate limits (GitHub/GitLab/Gitea patterns)
+    const limit = res.headers.get('x-ratelimit-limit') || res.headers.get('ratelimit-limit');
+    const remaining = res.headers.get('x-ratelimit-remaining') || res.headers.get('ratelimit-remaining');
+    const reset = res.headers.get('x-ratelimit-reset') || res.headers.get('ratelimit-reset');
+
+    let endpoint = url;
+    try {
+      endpoint = new URL(url).pathname;
+    } catch(e) {}
+
+    // Async insert to not block the request
+    pool.query(
+      'INSERT INTO api_metrics (id, provider_id, endpoint, method, status_code, rate_limit_limit, rate_limit_remaining, rate_limit_reset) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [
+        crypto.randomUUID(), 
+        providerId, 
+        endpoint, 
+        options.method || 'GET', 
+        res.status, 
+        limit ? parseInt(limit as string) : null,
+        remaining ? parseInt(remaining as string) : null,
+        reset ? (isNaN(parseInt(reset)) ? new Date(reset) : new Date(parseInt(reset) * 1000)) : null
+      ]
+    ).catch(err => sysLog.error(`Failed to track API metric: ${err}`));
+
+    return res;
+  } catch (err) {
+    throw err;
+  }
+}
+
 function encrypt(text: string) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(MASTER_KEY.padEnd(32).slice(0, 32)), iv);
@@ -210,6 +272,15 @@ function decrypt(encryptedText: string) {
   }
 }
 
+function getProviderHeaders(provider: any, token: string) {
+  const type = provider.type.toLowerCase();
+  if (type === "github") return { "Authorization": `token ${token}` };
+  if (type.includes("gitlab")) return { "Private-Token": token };
+  if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
+  if (type === "bitbucket") return { "Authorization": `Bearer ${token}` };
+  return {};
+}
+
 async function getProviderUser(provider: any, token: string): Promise<string | null> {
   const type = provider.type.toLowerCase();
   let baseUrl = provider.url.replace(/\/$/, '');
@@ -224,28 +295,28 @@ async function getProviderUser(provider: any, token: string): Promise<string | n
   try {
     if (type === 'github') {
       headers['Authorization'] = `token ${token}`;
-      const res = await fetch(`${baseUrl}/user`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/user`, { headers });
       if (res.ok) {
         const data = await res.json();
         return data.login;
       }
     } else if (type.includes('gitlab')) {
       headers['Private-Token'] = token;
-      const res = await fetch(`${baseUrl}/api/v4/user`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/api/v4/user`, { headers });
       if (res.ok) {
         const data = await res.json();
         return data.username;
       }
     } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
       headers['Authorization'] = `token ${token}`;
-      const res = await fetch(`${baseUrl}/api/v1/user`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/api/v1/user`, { headers });
       if (res.ok) {
         const data = await res.json();
         return data.username;
       }
     } else if (type === 'bitbucket') {
       headers['Authorization'] = `Bearer ${token}`;
-      const res = await fetch(`${baseUrl}/2.0/user`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/2.0/user`, { headers });
       if (res.ok) {
         const data = await res.json();
         return data.nickname || data.username || data.uuid;
@@ -257,8 +328,18 @@ async function getProviderUser(provider: any, token: string): Promise<string | n
   return null;
 }
 
-async function provisionTargetRepository(provider: any, repoName: string, description: string, token: string) {
+async function provisionTargetRepository(provider: any, repoName: string, description: string, token: string, sourceUrl?: string, visibility: string = 'private') {
   const type = provider.type.toLowerCase();
+  const isPrivate = visibility === 'private';
+  
+  // Append mirror link to description if available
+  let finalDescription = description;
+  if (sourceUrl) {
+    const mirrorNote = `\n\nManaged by Hydrozoa - Mirrored from: ${sourceUrl}`;
+    if (!finalDescription.includes(mirrorNote)) {
+      finalDescription += mirrorNote;
+    }
+  }
   let baseUrl = provider.url.replace(/\/$/, '');
   if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
     baseUrl = 'https://api.github.com';
@@ -300,7 +381,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
     let exists = false;
     if (type === 'github') {
       headers['Authorization'] = `token ${token}`;
-      const res = await fetch(`${baseUrl}/repos/${fullName}`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/repos/${fullName}`, { headers });
       if (res.ok) exists = true;
       else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
       else if ([401, 403].includes(res.status)) {
@@ -308,7 +389,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
       }
     } else if (type.includes('gitlab')) {
       headers['Private-Token'] = token;
-      const res = await fetch(`${baseUrl}/api/v4/projects/${encodeURIComponent(fullName)}`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/api/v4/projects/${encodeURIComponent(fullName)}`, { headers });
       if (res.ok) exists = true;
       else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
       else if ([401, 403].includes(res.status)) {
@@ -316,7 +397,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
       }
     } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
       headers['Authorization'] = `token ${token}`;
-      const res = await fetch(`${baseUrl}/api/v1/repos/${fullName}`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/api/v1/repos/${fullName}`, { headers });
       if (res.ok) exists = true;
       else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
       else if ([401, 403].includes(res.status)) {
@@ -324,7 +405,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
       }
     } else if (type === 'bitbucket') {
       headers['Authorization'] = `Bearer ${token}`;
-      const res = await fetch(`${baseUrl}/2.0/repositories/${fullName}`, { headers });
+      const res = await trackedFetch(provider.id, `${baseUrl}/2.0/repositories/${fullName}`, { headers });
       if (res.ok) exists = true;
       else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
       else if ([401, 403].includes(res.status)) {
@@ -360,30 +441,30 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
     if (type === 'github') {
       const currentUser = await getProviderUser(provider, token);
       const createUrl = owner === currentUser ? `${baseUrl}/user/repos` : `${baseUrl}/orgs/${owner}/repos`;
-      createRes = await fetch(createUrl, {
+      createRes = await trackedFetch(provider.id, createUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name, description, private: true })
+        body: JSON.stringify({ name, description: finalDescription, private: isPrivate })
       });
     } else if (type.includes('gitlab')) {
-      createRes = await fetch(`${baseUrl}/api/v4/projects`, {
+      createRes = await trackedFetch(provider.id, `${baseUrl}/api/v4/projects`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name, path: name, visibility: 'private', description })
+        body: JSON.stringify({ name, path: name, visibility: visibility === 'internal' ? 'internal' : (isPrivate ? 'private' : 'public'), description: finalDescription })
       });
     } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
       const currentUser = await getProviderUser(provider, token);
       const createUrl = owner === currentUser ? `${baseUrl}/api/v1/user/repos` : `${baseUrl}/api/v1/org/${owner}/repos`;
-      createRes = await fetch(createUrl, {
+      createRes = await trackedFetch(provider.id, createUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name, description, private: true })
+        body: JSON.stringify({ name, description: finalDescription, private: isPrivate })
       });
     } else if (type === 'bitbucket') {
-      createRes = await fetch(`${baseUrl}/2.0/repositories/${fullName}`, {
+      createRes = await trackedFetch(provider.id, `${baseUrl}/2.0/repositories/${fullName}`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ scm: 'git', is_private: true, description })
+        body: JSON.stringify({ scm: 'git', is_private: isPrivate, description: finalDescription })
       });
     }
 
@@ -480,14 +561,6 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
   const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
   const headersTarget: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json", "Content-Type": "application/json" };
 
-  const getProviderHeaders = (provider: any, token: string) => {
-    const type = provider.type.toLowerCase();
-    if (type === "github") return { "Authorization": `token ${token}` };
-    if (type.includes("gitlab")) return { "Private-Token": token };
-    if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
-    return {};
-  };
-
   Object.assign(headersSource, getProviderHeaders(source, sourceToken));
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
@@ -497,10 +570,15 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
       ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
       : source.type.toLowerCase() === "github"
         ? `${sourceBase}/repos/${repoName}/issues?state=all&per_page=100`
-        : `${sourceBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
+        : source.type.toLowerCase() === "bitbucket"
+          ? `${sourceBase}/2.0/repositories/${repoName}/issues?pagelen=100`
+          : `${sourceBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
 
-    const resSource = await fetch(sourcePath, { headers: headersSource });
-    if (resSource.ok) sourceIssues = await resSource.json();
+    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
+    if (resSource.ok) {
+      const data = await resSource.json();
+      sourceIssues = Array.isArray(data) ? data : (data.values || []);
+    }
 
     if (!Array.isArray(sourceIssues)) return false;
 
@@ -509,10 +587,15 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
       ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
       : target.type.toLowerCase() === "github"
         ? `${targetBase}/repos/${repoName}/issues?state=all&per_page=100`
-        : `${targetBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
+        : target.type.toLowerCase() === "bitbucket"
+          ? `${targetBase}/2.0/repositories/${repoName}/issues?pagelen=100`
+          : `${targetBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
 
-    const resTarget = await fetch(targetPath, { headers: headersTarget });
-    if (resTarget.ok) targetIssues = await resTarget.json();
+    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
+    if (resTarget.ok) {
+      const data = await resTarget.json();
+      targetIssues = Array.isArray(data) ? data : (data.values || []);
+    }
 
     const existingTitles = new Set(targetIssues.map((i: any) => i.title));
     let created = 0;
@@ -532,19 +615,25 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
       try {
         let createRes;
         if (target.type.toLowerCase().includes("gitlab")) {
-          createRes = await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, description: body })
           });
         } else if (target.type.toLowerCase() === "github") {
-          createRes = await fetch(`${targetBase}/repos/${repoName}/issues`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, body })
           });
+        } else if (target.type.toLowerCase() === "bitbucket") {
+          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/issues`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ title, content: { raw: body } })
+          });
         } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
-          createRes = await fetch(`${targetBase}/api/v1/repos/${repoName}/issues`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, body })
@@ -574,14 +663,6 @@ async function syncMilestones(source: any, target: any, repoName: string, source
   const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
   const headersTarget: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json", "Content-Type": "application/json" };
 
-  const getProviderHeaders = (provider: any, token: string) => {
-    const type = provider.type.toLowerCase();
-    if (type === "github") return { "Authorization": `token ${token}` };
-    if (type.includes("gitlab")) return { "Private-Token": token };
-    if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
-    return {};
-  };
-
   Object.assign(headersSource, getProviderHeaders(source, sourceToken));
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
@@ -591,10 +672,15 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
       : source.type.toLowerCase() === "github"
         ? `${sourceBase}/repos/${repoName}/milestones?state=all&per_page=100`
-        : `${sourceBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
+        : source.type.toLowerCase() === "bitbucket"
+          ? `${sourceBase}/2.0/repositories/${repoName}/issues/milestones?pagelen=100`
+          : `${sourceBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
 
-    const resSource = await fetch(sourcePath, { headers: headersSource });
-    if (resSource.ok) sourceMilestones = await resSource.json();
+    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
+    if (resSource.ok) {
+      const data = await resSource.json();
+      sourceMilestones = Array.isArray(data) ? data : (data.values || []);
+    }
 
     if (!Array.isArray(sourceMilestones)) return false;
 
@@ -603,10 +689,15 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
       : target.type.toLowerCase() === "github"
         ? `${targetBase}/repos/${repoName}/milestones?state=all&per_page=100`
-        : `${targetBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
+        : target.type.toLowerCase() === "bitbucket"
+          ? `${targetBase}/2.0/repositories/${repoName}/issues/milestones?pagelen=100`
+          : `${targetBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
 
-    const resTarget = await fetch(targetPath, { headers: headersTarget });
-    if (resTarget.ok) targetMilestones = await resTarget.json();
+    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
+    if (resTarget.ok) {
+      const data = await resTarget.json();
+      targetMilestones = Array.isArray(data) ? data : (data.values || []);
+    }
 
     const existingTitles = new Set(targetMilestones.map((m: any) => m.title));
     let created = 0;
@@ -624,19 +715,25 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       try {
         let createRes;
         if (target.type.toLowerCase().includes("gitlab")) {
-          createRes = await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, description })
           });
         } else if (target.type.toLowerCase() === "github") {
-          createRes = await fetch(`${targetBase}/repos/${repoName}/milestones`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/milestones`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, description })
           });
+        } else if (target.type.toLowerCase() === "bitbucket") {
+          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/issues/milestones`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ name: title })
+          });
         } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
-          createRes = await fetch(`${targetBase}/api/v1/repos/${repoName}/milestones`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${repoName}/milestones`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, description })
@@ -665,14 +762,6 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
   const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
   const headersTarget: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json", "Content-Type": "application/json" };
 
-  const getProviderHeaders = (provider: any, token: string) => {
-    const type = provider.type.toLowerCase();
-    if (type === "github") return { "Authorization": `token ${token}` };
-    if (type.includes("gitlab")) return { "Private-Token": token };
-    if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
-    return {};
-  };
-
   Object.assign(headersSource, getProviderHeaders(source, sourceToken));
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
@@ -682,10 +771,15 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
       ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases?per_page=100`
       : source.type.toLowerCase() === "github"
         ? `${sourceBase}/repos/${repoName}/releases?per_page=100`
-        : `${sourceBase}/api/v1/repos/${repoName}/releases?per_page=100`;
+        : source.type.toLowerCase() === "bitbucket"
+          ? `${sourceBase}/2.0/repositories/${repoName}/refs/tags?pagelen=100`
+          : `${sourceBase}/api/v1/repos/${repoName}/releases?per_page=100`;
 
-    const resSource = await fetch(sourcePath, { headers: headersSource });
-    if (resSource.ok) sourceReleases = await resSource.json();
+    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
+    if (resSource.ok) {
+      const data = await resSource.json();
+      sourceReleases = Array.isArray(data) ? data : (data.values || []);
+    }
 
     if (!Array.isArray(sourceReleases)) return false;
 
@@ -694,19 +788,28 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
       ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases?per_page=100`
       : target.type.toLowerCase() === "github"
         ? `${targetBase}/repos/${repoName}/releases?per_page=100`
-        : `${targetBase}/api/v1/repos/${repoName}/releases?per_page=100`;
+        : target.type.toLowerCase() === "bitbucket"
+          ? `${targetBase}/2.0/repositories/${repoName}/refs/tags?pagelen=100`
+          : `${targetBase}/api/v1/repos/${repoName}/releases?per_page=100`;
 
-    const resTarget = await fetch(targetPath, { headers: headersTarget });
-    if (resTarget.ok) targetReleases = await resTarget.json();
+    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
+    if (resTarget.ok) {
+      const data = await resTarget.json();
+      targetReleases = Array.isArray(data) ? data : (data.values || []);
+    }
 
     const existingTags = new Set(targetReleases.map((r: any) => r.tag_name));
     let created = 0;
     let skipped = 0;
 
     for (const rel of sourceReleases) {
-      const tagName = rel.tag_name;
+      const tagName = rel.tag_name || rel.name; // Bitbucket uses name
       const name = rel.name;
-      const body = source.type.toLowerCase() === "github" ? rel.body : (rel.description || rel.body);
+      const body = source.type.toLowerCase() === "github" 
+        ? rel.body 
+        : source.type.toLowerCase() === "bitbucket"
+          ? (rel.message || rel.target?.message || "")
+          : (rel.description || rel.body);
 
       if (existingTags.has(tagName)) {
         skipped++;
@@ -716,19 +819,25 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
       try {
         let createRes;
         if (target.type.toLowerCase().includes("gitlab")) {
-          createRes = await fetch(`${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ name, tag_name: tagName, description: body })
           });
         } else if (target.type.toLowerCase() === "github") {
-          createRes = await fetch(`${targetBase}/repos/${repoName}/releases`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/releases`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ name, tag_name: tagName, body })
           });
+        } else if (target.type.toLowerCase() === "bitbucket") {
+          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/refs/tags`, {
+            method: "POST",
+            headers: headersTarget,
+            body: JSON.stringify({ name: tagName, message: body })
+          });
         } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
-          createRes = await fetch(`${targetBase}/api/v1/repos/${repoName}/releases`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${repoName}/releases`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ name, tag_name: tagName, body })
@@ -753,6 +862,10 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
 }
 
 async function processSyncItem(item: any) {
+  // Fetch latest settings
+  const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
+  const settings = settingsRes.rows[0];
+
   const sourceRes = await pool.query('SELECT * FROM providers WHERE id = $1', [item.source_provider]);
   const sourceProvider = sourceRes.rows[0];
   if (!sourceProvider) return;
@@ -770,23 +883,29 @@ async function processSyncItem(item: any) {
     const targetToken = decrypt(targetProvider.token);
 
     try {
-      // Update status to syncing
+      // Step 1: Forward Sync (Source -> Target)
       targetRef.status = 'syncing';
       targetRef.progress = 10;
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
       if (entities.includes('code')) await syncCode(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
-      targetRef.progress = 40;
-      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+      
+      // Step 2: Bidirectional Sync (Target -> Source) if enabled
+      if (settings?.bidirectional_sync) {
+        sysLog.info(`Bidirectional sync active for ${item.source_repo}. Performing reverse sync...`);
+        if (entities.includes('issues')) await syncIssues(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        if (entities.includes('milestones')) await syncMilestones(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        if (entities.includes('releases')) await syncReleases(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+      }
 
-      if (entities.includes('issues')) await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       targetRef.progress = 60;
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
-      if (entities.includes('milestones')) await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      if (entities.includes('issues')) await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       targetRef.progress = 80;
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
+      if (entities.includes('milestones')) await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       if (entities.includes('releases')) await syncReleases(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       
       targetRef.status = 'synced';
@@ -1005,7 +1124,7 @@ async function startServer() {
         headers['Authorization'] = `token ${token}`;
         sysLog.info("Fetching GitHub namespaces...");
         
-        const userRes = await fetch(`${baseUrl}/user`, { headers });
+        const userRes = await trackedFetch(sourceProvider.id, `${baseUrl}/user`, { headers });
         if (!userRes.ok) {
           const errText = await userRes.text();
           sysLog.error(`GitHub User API failed (${userRes.status}): ${errText}`);
@@ -1014,7 +1133,7 @@ async function startServer() {
 
         const userData = await userRes.json();
         
-        const orgsRes = await fetch(`${baseUrl}/user/orgs`, { headers });
+        const orgsRes = await trackedFetch(sourceProvider.id, `${baseUrl}/user/orgs`, { headers });
         if (!orgsRes.ok) {
           const errText = await orgsRes.text();
           sysLog.error(`GitHub Orgs API failed (${orgsRes.status}): ${errText}`);
@@ -1035,7 +1154,7 @@ async function startServer() {
         headers['Private-Token'] = token;
         sysLog.info(`Fetching GitLab namespaces from: ${baseUrl}`);
 
-        const userRes = await fetch(`${baseUrl}/api/v4/user`, { headers });
+        const userRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v4/user`, { headers });
         if (!userRes.ok) {
           const errText = await userRes.text();
           sysLog.error(`GitLab User API failed (${userRes.status}): ${errText}`);
@@ -1044,7 +1163,7 @@ async function startServer() {
 
         const userData = await userRes.json();
 
-        const groupsRes = await fetch(`${baseUrl}/api/v4/groups`, { headers });
+        const groupsRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v4/groups`, { headers });
         if (!groupsRes.ok) {
           const errText = await groupsRes.text();
           sysLog.error(`GitLab Groups API failed (${groupsRes.status}): ${errText}`);
@@ -1062,7 +1181,7 @@ async function startServer() {
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
         sysLog.info(`Fetching ${sourceProvider.type} namespaces from: ${baseUrl}`);
-        const userRes = await fetch(`${baseUrl}/api/v1/user`, { headers: { 'Authorization': `token ${token}` } });
+        const userRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v1/user`, { headers: { 'Authorization': `token ${token}` } });
         if (!userRes.ok) {
           const errText = await userRes.text();
           sysLog.error(`${sourceProvider.type} User API failed (${userRes.status}): ${errText}`);
@@ -1071,7 +1190,7 @@ async function startServer() {
         }
         const userData = await userRes.json();
 
-        const orgsRes = await fetch(`${baseUrl}/api/v1/user/orgs`, { headers: { 'Authorization': `token ${token}` } });
+        const orgsRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v1/user/orgs`, { headers: { 'Authorization': `token ${token}` } });
         if (!orgsRes.ok) {
           const errText = await orgsRes.text();
           sysLog.error(`${sourceProvider.type} Orgs API failed (${orgsRes.status}): ${errText}`);
@@ -1089,7 +1208,7 @@ async function startServer() {
 
       if (sourceProvider.type === 'bitbucket') {
         sysLog.info("Fetching Bitbucket namespaces...");
-        const userRes = await fetch('https://api.bitbucket.org/2.0/user', { headers: { 'Authorization': `Bearer ${token}` } });
+        const userRes = await trackedFetch(sourceProvider.id, 'https://api.bitbucket.org/2.0/user', { headers: { 'Authorization': `Bearer ${token}` } });
         if (!userRes.ok) {
           const errText = await userRes.text();
           sysLog.error(`Bitbucket User API failed (${userRes.status}): ${errText}`);
@@ -1098,7 +1217,7 @@ async function startServer() {
         }
         const userData = await userRes.json();
 
-        const workspacesRes = await fetch('https://api.bitbucket.org/2.0/workspaces', { headers: { 'Authorization': `Bearer ${token}` } });
+        const workspacesRes = await trackedFetch(sourceProvider.id, 'https://api.bitbucket.org/2.0/workspaces', { headers: { 'Authorization': `Bearer ${token}` } });
         if (!workspacesRes.ok) {
           const errText = await workspacesRes.text();
           sysLog.error(`Bitbucket Workspaces API failed (${workspacesRes.status}): ${errText}`);
@@ -1147,7 +1266,7 @@ async function startServer() {
         const url = `${baseUrl}/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=${perPage}&page=${page}`;
         sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
 
-        const reposRes = await fetch(url, { headers });
+        const reposRes = await trackedFetch(sourceProvider.id, url, { headers });
         if (!reposRes.ok) {
           const errText = await reposRes.text();
           sysLog.error(`GitHub Repos API failed (${reposRes.status}) for ${id}: ${errText}`);
@@ -1162,7 +1281,9 @@ async function startServer() {
         return res.json(safeReposData.map((repo: any) => ({
           id: repo.id.toString(),
           name: repo.name,
-          description: repo.description
+          description: repo.description,
+          web_url: repo.html_url,
+          visibility: repo.private ? 'private' : 'public'
         })));
       }
 
@@ -1174,7 +1295,7 @@ async function startServer() {
         
         sysLog.info(`Fetching GitLab projects for ${id} from ${url}`);
 
-        const reposRes = await fetch(url, { headers });
+        const reposRes = await trackedFetch(sourceProvider.id, url, { headers });
         if (!reposRes.ok) {
           const errText = await reposRes.text();
           sysLog.error(`GitLab Projects API failed (${reposRes.status}) for ${id}: ${errText}`);
@@ -1189,7 +1310,9 @@ async function startServer() {
         return res.json(safeReposData.map((project: any) => ({
           id: project.id.toString(),
           name: project.path_with_namespace,
-          description: project.description
+          description: project.description,
+          web_url: project.web_url,
+          visibility: project.visibility === 'public' ? 'public' : 'private'
         })));
       }
 
@@ -1197,13 +1320,13 @@ async function startServer() {
         // We try organization repos first, then fall back to user repos if needed
         let url = `${baseUrl}/api/v1/orgs/${id}/repos?limit=${perPage}&page=${page}`;
         sysLog.info(`Fetching ${sourceProvider.type} repos for ${id} from ${url}`);
-        let reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `token ${token}` } });
+        let reposRes = await trackedFetch(sourceProvider.id, url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         
         if (!reposRes.ok) {
           // Fallback to user repos if org repos fail
           url = `${baseUrl}/api/v1/user/repos?limit=${perPage}&page=${page}`;
           sysLog.info(`Falling back to ${sourceProvider.type} user repos for ${id} from ${url}`);
-          reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `token ${token}` } });
+          reposRes = await trackedFetch(sourceProvider.id, url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         }
 
         if (!reposRes.ok) {
@@ -1216,13 +1339,19 @@ async function startServer() {
         const reposData = await reposRes.json();
         const safeReposData = Array.isArray(reposData) ? reposData : [];
         sysLog.success(`Found ${safeReposData.length} repos for ${sourceProvider.type} namespace ${id}`);
-        return res.json(safeReposData.map((repo: any) => ({ id: repo.id.toString(), name: repo.full_name || repo.name, description: repo.description })));
+        return res.json(safeReposData.map((repo: any) => ({ 
+          id: repo.id.toString(), 
+          name: repo.full_name || repo.name, 
+          description: repo.description,
+          web_url: repo.html_url || repo.web_url || (repo.links?.html?.href),
+          visibility: repo.private || repo.is_private ? 'private' : 'public'
+        })));
       }
 
       if (sourceProvider.type === 'bitbucket') {
         const url = `https://api.bitbucket.org/2.0/repositories/${id}?pagelen=${perPage}&page=${page}`;
         sysLog.info(`Fetching Bitbucket repos for ${id} from ${url}`);
-        const reposRes = await fetch(url, { headers: { ...headers, 'Authorization': `Bearer ${token}` } });
+        const reposRes = await trackedFetch(sourceProvider.id, url, { headers: { ...headers, 'Authorization': `Bearer ${token}` } });
         if (!reposRes.ok) {
           const errText = await reposRes.text();
           sysLog.error(`Bitbucket Repos API failed (${reposRes.status}) for ${id}: ${errText}`);
@@ -1232,7 +1361,13 @@ async function startServer() {
         const reposData = await reposRes.json();
         const reposList = Array.isArray(reposData.values) ? reposData.values : [];
         sysLog.success(`Found ${reposList.length} repos for Bitbucket namespace ${id}`);
-        return res.json(reposList.map((repo: any) => ({ id: repo.uuid, name: repo.full_name, description: repo.description })));
+        return res.json(reposList.map((repo: any) => ({ 
+          id: repo.uuid, 
+          name: repo.full_name, 
+          description: repo.description,
+          web_url: repo.links?.html?.href,
+          visibility: repo.is_private ? 'private' : 'public'
+        })));
       }
 
 
@@ -1415,7 +1550,7 @@ async function startServer() {
       }
       
       // Simple HEAD request to check reachability
-      const pingRes = await fetch(baseUrl, { 
+      const pingRes = await trackedFetch(provider.id, baseUrl, { 
         method: 'HEAD',
         headers: { 'User-Agent': 'Hydrozoa-Mirror-Agent' }
       });
@@ -1563,15 +1698,16 @@ async function startServer() {
 
   app.post("/api/v1/source/selection", authenticateToken, async (req, res) => {
     const { selectedRepos, targetProviderIds, entities } = req.body;
-    
-    // Automation logic for target repository creation
     const selectedRepoDetails = selectedRepos.map((repo: any) => {
       return {
         id: repo.id,
         name: repo.name,
         description: repo.description || "Automated mirror target",
         tags: repo.tags || ["hydrozoa", "mirror"],
-        entities: repo.entities || entities || ["code"]
+        entities: repo.entities || entities || ["code"],
+        branch: repo.branch || "main",
+        visibility: repo.visibility || "private",
+        web_url: repo.web_url
       };
     });
 
@@ -1590,7 +1726,7 @@ async function startServer() {
       const decryptedToken = decrypt(provider.token);
 
       for (const repo of selectedRepoDetails) {
-        const provisionResult = await provisionTargetRepository(provider, repo.name, repo.description, decryptedToken);
+        const provisionResult = await provisionTargetRepository(provider, repo.name, repo.description, decryptedToken, repo.web_url, repo.visibility);
 
         provisionSummary.push({
           provider: provider.name,
@@ -1614,14 +1750,14 @@ async function startServer() {
                 bytes_transferred: "0B",
                 progress: 0
               });
-              await pool.query('UPDATE sync_matrix SET targets = $1, entities = $2 WHERE id = $3', [JSON.stringify(targets), JSON.stringify(repo.entities), existingSync.id]);
+              await pool.query('UPDATE sync_matrix SET targets = $1, entities = $2, branch = $3 WHERE id = $4', [JSON.stringify(targets), JSON.stringify(repo.entities), repo.branch, existingSync.id]);
             }
           } else {
             const newSync = {
               id: `sm-${crypto.randomUUID().slice(0, 8)}`,
               source_repo: repo.name,
               source_provider: sourceProviderId,
-              branch: "main",
+              branch: repo.branch,
               last_commit: "initial",
               sync_interval: 15,
               last_sync_duration: "0s",
@@ -1716,28 +1852,42 @@ async function startServer() {
     res.json({ message: "Manual sync initiated", item: { ...item, targets } });
   });
 
-  app.get("/api/v1/system/settings", authenticateToken, (req, res) => {
-    res.json({
-      sync_interval: 15,
-      encryption_enabled: true,
-      log_retention_days: 7,
-      max_concurrent_syncs: 5,
-      bidirectional_sync: false,
-      conflict_strategy: "source_wins"
-    });
+  app.get("/api/v1/system/settings", authenticateToken, async (req, res) => {
+    try {
+      const result = await pool.query('SELECT * FROM system_settings WHERE id = 1');
+      res.json(result.rows[0]);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch settings" });
+    }
   });
 
   app.post("/api/v1/system/settings", authenticateToken, async (req, res) => {
-    await addLog({
-      level: "info",
-      code: "H-SYS-CONFIG",
-      provider: "system",
-      message: "System settings updated",
-      technical_context: `Updated settings: ${JSON.stringify(req.body)}`,
-      ui_message: "Configuration synchronized successfully.",
-      resolution: "No action required."
-    });
-    res.json({ message: "Settings updated", settings: req.body });
+    const { sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy } = req.body;
+    try {
+      await pool.query(
+        `UPDATE system_settings SET 
+          sync_interval = $1, 
+          log_retention_days = $2, 
+          max_concurrent_syncs = $3, 
+          bidirectional_sync = $4, 
+          conflict_strategy = $5 
+        WHERE id = 1`,
+        [sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy]
+      );
+      
+      await addLog({
+        level: "info",
+        code: "H-SYS-CONFIG",
+        provider: "system",
+        message: "System settings updated",
+        technical_context: `Updated settings: ${JSON.stringify(req.body)}`,
+        ui_message: "Configuration synchronized successfully.",
+        resolution: "No action required."
+      });
+      res.json({ message: "Settings updated", settings: req.body });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update settings" });
+    }
   });
 
   // Vite middleware for development
