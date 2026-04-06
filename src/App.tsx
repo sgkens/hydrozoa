@@ -998,62 +998,97 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     setSelectedRepos(new Set());
   };
 
+  const sourceProviderObj = providers.find(p => p.isSource);
+  const targetProviders = providers.filter(p => !p.isSource);
+
   return (
     <div className="space-y-8">
-      {/* Target Selection Section */}
-      <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
-            <RefreshCw className="w-6 h-6 text-cyan-400" />
+      {/* Node Role Configuration */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Source Node Info - Reference Only */}
+        <div className="col-span-1 glass-card p-6 border-magenta-500/20 bg-magenta-500/5 relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-2 opacity-10">
+            <Box className="w-16 h-16 text-magenta-400" />
           </div>
-          <div>
-            <h3 className="text-xl font-black text-white uppercase tracking-tighter">Target Mirror Nodes</h3>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Select providers where repositories will be automatically provisioned and mirrored.</p>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-8 h-8 bg-magenta-500/20 rounded-lg flex items-center justify-center">
+              <Box className="w-5 h-5 text-magenta-400" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-white uppercase tracking-tighter">Source Node</h3>
+              <p className="text-[8px] font-bold text-slate-500 uppercase tracking-widest mt-0.5">Primary repository origin</p>
+            </div>
           </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {providers.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => toggleTargetProvider(p.id)}
-              className={cn(
-                "p-4 rounded-2xl border transition-all flex items-center gap-4 group",
-                selectedTargetProviders.has(p.id) 
-                  ? "bg-cyan-500/10 border-cyan-500/40 shadow-[0_0_20px_rgba(0,243,255,0.1)]" 
-                  : "bg-white/5 border-white/5 hover:border-white/20"
-              )}
-            >
-              <div className={cn(
-                "p-2 rounded-lg transition-colors",
-                selectedTargetProviders.has(p.id) ? "bg-cyan-500/20 text-cyan-400" : "bg-white/5 text-slate-500"
-              )}>
-                {p.type === 'github' ? <Github className="w-5 h-5" /> : <Gitlab className="w-5 h-5" />}
+          
+          {sourceProviderObj ? (
+            <div className="flex items-center gap-4 p-3 rounded-xl bg-white/5 border border-white/5">
+              <div className="p-2 bg-magenta-500/20 rounded-lg">
+                {sourceProviderObj.type === 'github' ? <Github className="w-5 h-5 text-magenta-400" /> : <Gitlab className="w-5 h-5 text-magenta-400" />}
               </div>
               <div className="text-left">
-                <div className="flex items-center gap-2">
+                <p className="text-xs font-black text-white uppercase tracking-widest">{sourceProviderObj.name}</p>
+                <p className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter mt-0.5">{sourceProviderObj.type}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-[9px] text-red-400 font-bold uppercase tracking-widest text-center">
+              No source provider configured
+            </div>
+          )}
+        </div>
+
+        {/* Target Mirror Selection */}
+        <div className="col-span-3 glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+              <RefreshCw className="w-6 h-6 text-cyan-400" />
+            </div>
+            <div>
+              <h3 className="text-xl font-black text-white uppercase tracking-tighter">Target Mirror Nodes</h3>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Select providers where repositories will be automatically provisioned and mirrored.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {targetProviders.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => toggleTargetProvider(p.id)}
+                className={cn(
+                  "p-4 rounded-2xl border transition-all flex items-center gap-4 group",
+                  selectedTargetProviders.has(p.id) 
+                    ? "bg-cyan-500/10 border-cyan-500/40 shadow-[0_0_20px_rgba(0,243,255,0.1)]" 
+                    : "bg-white/5 border-white/5 hover:border-white/20"
+                )}
+              >
+                <div className={cn(
+                  "p-2 rounded-lg transition-colors",
+                  selectedTargetProviders.has(p.id) ? "bg-cyan-500/20 text-cyan-400" : "bg-white/5 text-slate-500"
+                )}>
+                  {p.type === 'github' ? <Github className="w-5 h-5" /> : <Gitlab className="w-5 h-5" />}
+                </div>
+                <div className="text-left">
                   <p className={cn(
                     "text-xs font-black uppercase tracking-widest",
                     selectedTargetProviders.has(p.id) ? "text-white" : "text-slate-500"
                   )}>{p.name}</p>
-                  <span className={cn(
-                    "text-[7px] font-black px-1 py-0.5 rounded uppercase tracking-tighter",
-                    p.isSource ? "bg-amber-500/20 text-amber-400" : "bg-cyan-500/20 text-cyan-400"
-                  )}>
-                    {p.isSource ? "Source" : "Target"}
-                  </span>
+                  <p className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter mt-0.5">{p.type}</p>
                 </div>
-                <p className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter mt-0.5">{p.type}</p>
+                <div className="ml-auto">
+                  {selectedTargetProviders.has(p.id) ? (
+                    <CheckCircle2 className="w-4 h-4 text-cyan-400" />
+                  ) : (
+                    <Circle className="w-4 h-4 text-slate-800" />
+                  )}
+                </div>
+              </button>
+            ))}
+            {targetProviders.length === 0 && (
+              <div className="col-span-full py-8 text-center bg-black/20 rounded-2xl border border-dashed border-white/5">
+                <p className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">No target adapters available</p>
               </div>
-              <div className="ml-auto">
-                {selectedTargetProviders.has(p.id) ? (
-                  <CheckCircle2 className="w-4 h-4 text-cyan-400" />
-                ) : (
-                  <Circle className="w-4 h-4 text-slate-800" />
-                )}
-              </div>
-            </button>
-          ))}
+            )}
+          </div>
         </div>
       </div>
 
@@ -1159,29 +1194,29 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                   <div className="p-4 space-y-2">
                     {repos[ns.id]?.map((repo) => {
                       const isSynced = syncMatrix.some(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`);
+                      const isSelected = selectedRepos.has(repo.id);
+                      
                       return (
                         <div 
                           key={repo.id} 
                           className={cn(
-                            "flex items-center justify-between p-3 rounded-lg transition-colors group",
-                            isSynced ? "bg-white/2" : "hover:bg-white/5 cursor-pointer"
+                            "flex items-center justify-between p-3 rounded-lg transition-colors group cursor-pointer",
+                            isSelected ? "bg-white/5 border border-white/5" : "hover:bg-white/5 border border-transparent",
+                            isSynced && !isSelected ? "opacity-80" : ""
                           )}
                           onClick={() => handleRepoCheck(ns.id, repo.id)}
                         >
                           <div className="flex items-center gap-3">
-                            <button 
-                              className="p-1"
-                              onClick={(e) => { e.stopPropagation(); handleRepoCheck(ns.id, repo.id); }}
-                            >
-                              {selectedRepos.has(repo.id) || isSynced ? (
-                                <CheckCircle2 className={cn("w-4 h-4", isSynced ? "text-slate-600" : "text-cyan-400")} />
+                            <div className="p-1">
+                              {isSelected ? (
+                                <CheckCircle2 className="w-4 h-4 text-cyan-400 glow-cyan" />
                               ) : (
                                 <Circle className="w-4 h-4 text-slate-700" />
                               )}
-                            </button>
+                            </div>
                             <div>
                               <div className="flex items-center gap-2">
-                                <p className={cn("text-sm font-bold transition-colors", isSynced ? "text-slate-500" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
+                                <p className={cn("text-sm font-bold transition-colors", isSelected ? "text-white" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
                                 <span className={cn(
                                   "text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter border",
                                   repo.visibility === 'public' ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border-amber-500/20"
@@ -1189,11 +1224,11 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                                   {repo.visibility}
                                 </span>
                                 {isSynced && (
-                                  <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded uppercase tracking-widest border border-emerald-500/20">Synced</span>
+                                  <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded uppercase tracking-widest border border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]">Synced</span>
                                 )}
                               </div>
                               <div className="flex gap-2 items-center mt-1">
-                                {(selectedRepos.has(repo.id) || isSynced) ? (
+                                {isSelected ? (
                                   <div className="flex items-center gap-2">
                                     <div className="flex gap-1">
                                       {['code', 'issues', 'milestones', 'releases'].map(ent => (
@@ -1223,18 +1258,20 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                                     </div>
                                   </div>
                                 ) : (
-                                  <p className="text-[10px] text-slate-600 font-medium">{repo.description}</p>
+                                  <p className="text-[10px] text-slate-600 font-medium">{repo.description || 'No description provided'}</p>
                                 )}
                               </div>
                             </div>
                           </div>
-                          {!isSynced && selectedRepos.has(repo.id) && (
-                            <div className="text-[10px] font-black text-cyan-500/50 uppercase tracking-widest animate-pulse">
-                              Pending Mirror
-                            </div>
-                          )}
+                          <div className={cn(
+                            "text-[10px] font-black uppercase tracking-widest transition-opacity",
+                            isSelected ? "text-cyan-400 opacity-100" : "text-slate-700 opacity-0 group-hover:opacity-100"
+                          )}>
+                            {isSelected ? (isSynced ? "Mirror Configured" : "Mirror Active") : "Enable Mirror"}
+                          </div>
                         </div>
-                    );})}
+                      );
+                    })}
                     
                     {hasMoreRepos[ns.id] && (
                       <button 
@@ -1298,17 +1335,21 @@ function AppContent() {
   const [providerLatencies, setProviderLatencies] = useState<Record<string, { latency: string, status: string }>>({});
   const [namespaces, setNamespaces] = useState<Namespace[]>([]);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
+  const [newProviderType, setNewProviderType] = useState('github');
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [passwordReset, setPasswordReset] = useState({ current: '', new: '', confirm: '' });
   const [passwordResetStatus, setPasswordResetStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
+  const [isAppLoading, setIsAppLoading] = useState(true);
 
   useEffect(() => {
     if (isAuthenticated) {
-      fetchData();
-      fetchSettings();
+      setIsAppLoading(true);
+      Promise.all([fetchData(), fetchSettings()]).finally(() => setIsAppLoading(false));
       const interval = setInterval(fetchData, 30000);
       return () => clearInterval(interval);
+    } else {
+      setIsAppLoading(false);
     }
   }, [isAuthenticated]);
 
@@ -1505,6 +1546,19 @@ function AppContent() {
             </button>
           </form>
         </motion.div>
+      </div>
+    );
+  }
+
+  if (isAppLoading) {
+    return (
+      <div className="h-screen w-screen bg-[#0a0f1a] flex items-center justify-center relative overflow-hidden">
+        <SyncTentacles />
+        <div className="glass-card p-8 flex flex-col items-center border-white/10 z-10">
+          <HydrozoaLogo className="w-16 h-16 animate-pulse mb-4" />
+          <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-[10px] font-black text-cyan-400 uppercase tracking-[0.2em] animate-pulse">Initializing Interface...</p>
+        </div>
       </div>
     );
   }
@@ -2143,19 +2197,24 @@ function AppContent() {
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Adapter Type</label>
-                <select name="type" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium cursor-pointer">
-                  <option value="github">GitHub</option>
-                  <option value="gitlab_self_hosted">GitLab (Self-Hosted)</option>
-                  <option value="gitea">Gitea</option>
-                  <option value="forgejo">Forgejo</option>
-                  <option value="gogs">Gogs</option>
-                  <option value="bitbucket">Bitbucket</option>
+                <select name="type" value={newProviderType} onChange={(e) => setNewProviderType(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium cursor-pointer">
+                  <option className="bg-slate-900 text-white" value="github">GitHub</option>
+                  <option className="bg-slate-900 text-white" value="gitlab">GitLab (Cloud)</option>
+                  <option className="bg-slate-900 text-white" value="gitlab_self_hosted">GitLab (Self-Hosted)</option>
+                  <option className="bg-slate-900 text-white" value="gitea">Gitea</option>
+                  <option className="bg-slate-900 text-white" value="forgejo">Forgejo</option>
+                  <option className="bg-slate-900 text-white" value="gogs">Gogs</option>
+                  <option className="bg-slate-900 text-white" value="bitbucket">Bitbucket</option>
                 </select>
               </div>
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Base URL</label>
-                <input name="baseUrl" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="https://git.company.com" />
-              </div>
+              {['github', 'gitlab', 'bitbucket'].includes(newProviderType) ? (
+                <input type="hidden" name="baseUrl" value={newProviderType === 'github' ? 'https://github.com' : newProviderType === 'gitlab' ? 'https://gitlab.com' : 'https://bitbucket.org'} />
+              ) : (
+                <div>
+                  <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Base URL</label>
+                  <input name="baseUrl" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="https://git.company.com" />
+                </div>
+              )}
               <div>
                 <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Personal Access Token</label>
                 <input name="token" type="password" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="glpat-xxxxxxxxxxxxxxx" />
