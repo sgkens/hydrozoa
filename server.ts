@@ -947,16 +947,39 @@ async function processSyncItem(item: any) {
 }
 
 // Background tasks
-setInterval(async () => {
+let isSyncing = false;
+const runSyncEngine = async () => {
+  if (isSyncing) return;
+  isSyncing = true;
+  let syncIntervalMinutes = 1; // Default fallback
   try {
+    const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
+    const settings = settingsRes.rows[0];
+    syncIntervalMinutes = settings?.sync_interval || 15; // Usually defaults to 15 in DB
+
     const matrixRes = await pool.query('SELECT * FROM sync_matrix');
-    for (const item of matrixRes.rows) {
-      await processSyncItem(item);
+    
+    // Process items in chunks based on max_concurrent_syncs to stagger performance
+    const maxConcurrent = settings?.max_concurrent_syncs || 5;
+    for (let i = 0; i < matrixRes.rows.length; i += maxConcurrent) {
+      const chunk = matrixRes.rows.slice(i, i + maxConcurrent);
+      await Promise.all(chunk.map(item => processSyncItem(item).catch(err => sysLog.error(`Item sync error: ${err}`))));
+      
+      // Stagger chunks to prevent network/CPU spikes
+      if (i + maxConcurrent < matrixRes.rows.length) {
+        await new Promise(resolve => setTimeout(resolve, 5000)); // 5 second stagger
+      }
     }
   } catch (err) {
     sysLog.error(`Sync engine error: ${err}`);
+  } finally {
+    isSyncing = false;
+    setTimeout(runSyncEngine, syncIntervalMinutes * 60 * 1000);
   }
-}, 60000); // Run every minute
+};
+
+// Start the sync engine after a brief initialization delay
+setTimeout(runSyncEngine, 5000);
 
 async function startServer() {
 
@@ -1714,6 +1737,19 @@ async function startServer() {
     const sourceProviderRes = await pool.query('SELECT * FROM providers WHERE is_source = true');
     const sourceProvider = sourceProviderRes.rows[0];
     const sourceProviderId = sourceProvider ? sourceProvider.id : 'unknown';
+
+    // Remove any items from sync_matrix that were deselected
+    if (sourceProviderId !== 'unknown') {
+      const currentSyncsRes = await pool.query('SELECT source_repo FROM sync_matrix WHERE source_provider = $1', [sourceProviderId]);
+      const selectedRepoNames = selectedRepoDetails.map(r => r.name);
+      
+      for (const row of currentSyncsRes.rows) {
+        if (!selectedRepoNames.includes(row.source_repo)) {
+          sysLog.info(`Removing deselected repository from sync matrix: ${row.source_repo}`);
+          await pool.query('DELETE FROM sync_matrix WHERE source_repo = $1 AND source_provider = $2', [row.source_repo, sourceProviderId]);
+        }
+      }
+    }
 
     const provisionSummary = [];
 
