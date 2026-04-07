@@ -194,6 +194,20 @@ async function initDb() {
     }
     
     sysLog.success("Database initialized successfully");
+
+    // Startup Cleanup: Reset any items that were stuck in 'syncing' state
+    const stuckSyncs = await pool.query("SELECT * FROM sync_matrix WHERE targets::text LIKE '%\"status\":\"syncing\"%'");
+    if (stuckSyncs.rows.length > 0) {
+      sysLog.info(`Cleaning up ${stuckSyncs.rows.length} potentially stuck sync operations...`);
+      for (const row of stuckSyncs.rows) {
+        const targets = row.targets.map((t: any) => ({
+          ...t,
+          status: t.status === 'syncing' ? 'pending' : t.status
+        }));
+        await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), row.id]);
+      }
+      sysLog.success("Stuck sync operations reset to pending.");
+    }
   } catch (err) {
     sysLog.error(`Database initialization failed: ${err}`);
   }
@@ -547,8 +561,16 @@ async function syncCode(source: any, target: any, repoName: string, sourceToken:
 
     sysLog.info(`Mirroring code: ${repoName} -> ${target.name}`);
     
-    await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`);
-    await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`);
+    try {
+      sysLog.info(`Cloning from source: ${repoName}...`);
+      await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`);
+      sysLog.info(`Successfully cloned ${repoName}. Pushing to target...`);
+      await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`);
+      sysLog.success(`Code sync successful for ${repoName} -> ${target.name}`);
+    } catch (gitErr: any) {
+      sysLog.error(`Git operation failed for ${repoName}: ${gitErr.message}`);
+      throw gitErr;
+    }
     
     return true;
   } catch (err: any) {
@@ -959,6 +981,7 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
 }
 
 async function processSyncItem(item: any) {
+  sysLog.info(`Processing mirror item: ${item.source_repo}`);
   // Fetch latest settings
   const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
   const settings = settingsRes.rows[0];
@@ -1052,11 +1075,20 @@ const runSyncEngine = async () => {
   isSyncing = true;
   let syncIntervalMinutes = 1; // Default fallback
   try {
+    sysLog.info("Sync engine heartbeat: Checking for items to mirror...");
     const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
     const settings = settingsRes.rows[0];
-    syncIntervalMinutes = settings?.sync_interval || 15; // Usually defaults to 15 in DB
+    syncIntervalMinutes = settings?.sync_interval || 15;
 
     const matrixRes = await pool.query('SELECT * FROM sync_matrix');
+    if (matrixRes.rows.length === 0) {
+      sysLog.info("Sync engine: No repositories configured for mirroring yet.");
+    } else {
+      sysLog.info(`Sync engine: Processing ${matrixRes.rows.length} synchronization items...`);
+      matrixRes.rows.forEach(row => {
+        sysLog.info(` - Sync Item: ${row.source_repo} (Entities: ${row.entities || 'default'})`);
+      });
+    }
     
     // Process items in chunks based on max_concurrent_syncs to stagger performance
     const maxConcurrent = settings?.max_concurrent_syncs || 5;
@@ -1073,6 +1105,7 @@ const runSyncEngine = async () => {
     sysLog.error(`Sync engine error: ${err}`);
   } finally {
     isSyncing = false;
+    sysLog.info(`Sync engine cycle complete. Next run in ${syncIntervalMinutes} minutes.`);
     setTimeout(runSyncEngine, syncIntervalMinutes * 60 * 1000);
   }
 };
