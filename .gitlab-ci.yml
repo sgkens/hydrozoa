@@ -7,7 +7,7 @@ stages:
   - release
 
 variables:
-  DOCKER_IMAGE: "index.docker.io/${DOCKER_HUB_USER:-sgkens}/hydrozoa"
+  # Global variables
 
 # 1. Versioning Stage
 generate_version:
@@ -55,6 +55,7 @@ build_image:
       artifacts: true
   before_script:
     - apk add --no-cache git
+    - export DOCKER_IMAGE="index.docker.io/${DOCKER_HUB_USER:-sgkens}/hydrozoa"
   script:
     - echo "Building image for version $BUILD_VERSION"
     - echo "Target image $DOCKER_IMAGE:$BUILD_VERSION"
@@ -83,6 +84,7 @@ push_image:
       artifacts: true
   before_script:
     - apk add --no-cache git
+    - export DOCKER_IMAGE="index.docker.io/${DOCKER_HUB_USER:-sgkens}/hydrozoa"
   script:
     - docker load < hydrozoa_image.tar
     - echo "$DOCKER_HUB_TOKEN" | docker login -u "${DOCKER_HUB_USER:-sgkens}" --password-stdin
