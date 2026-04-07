@@ -1464,7 +1464,13 @@ export default function App() {
 }
 
 function AppContent() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'matrix' | 'source' | 'providers' | 'dlq' | 'logs' | 'settings' | 'systems'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'matrix' | 'source' | 'providers' | 'dlq' | 'logs' | 'settings' | 'systems'>(
+    (localStorage.getItem('hydrozoa_active_tab') as any) || 'dashboard'
+  );
+
+  useEffect(() => {
+    localStorage.setItem('hydrozoa_active_tab', activeTab);
+  }, [activeTab]);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('hydrozoa_token'));
@@ -1658,6 +1664,7 @@ function AppContent() {
   const handleLogout = () => {
     localStorage.removeItem('hydrozoa_token');
     localStorage.removeItem('hydrozoa_is_default');
+    localStorage.removeItem('hydrozoa_active_tab');
     setIsAuthenticated(false);
     setIsDefaultPassword(false);
   };
