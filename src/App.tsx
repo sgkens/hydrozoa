@@ -26,7 +26,9 @@ import {
   Tag,
   Book,
   Copy,
-  Check
+  Check,
+  Info,
+  XCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -115,7 +117,59 @@ interface ProviderInfo {
   status: string;
 }
 
+interface Toast {
+  id: string;
+  title: string;
+  message: string;
+  type: 'success' | 'error' | 'info' | 'warning';
+}
+
 // --- Components ---
+
+const ToastContainer = ({ toasts, onRemove }: { toasts: Toast[], onRemove: (id: string) => void }) => (
+  <div className="fixed bottom-6 right-6 z-[9999] space-y-3 pointer-events-none">
+    <AnimatePresence>
+      {toasts.map((toast) => (
+        <motion.div
+          key={toast.id}
+          initial={{ opacity: 0, x: 20, scale: 0.95 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+          className={cn(
+            "pointer-events-auto flex items-start gap-4 p-4 rounded-2xl glass-card border min-w-[320px] max-w-[400px] shadow-2xl",
+            toast.type === 'success' ? "border-emerald-500/30 bg-emerald-500/5" :
+            toast.type === 'error' ? "border-red-500/30 bg-red-500/5" :
+            toast.type === 'warning' ? "border-amber-500/30 bg-amber-500/5" :
+            "border-cyan-500/30 bg-cyan-500/5"
+          )}
+        >
+          <div className={cn(
+            "p-2 rounded-xl",
+            toast.type === 'success' ? "bg-emerald-500/20 text-emerald-400" :
+            toast.type === 'error' ? "bg-red-500/20 text-red-400" :
+            toast.type === 'warning' ? "bg-amber-500/20 text-amber-400" :
+            "bg-cyan-500/20 text-cyan-400"
+          )}>
+            {toast.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> :
+             toast.type === 'error' ? <XCircle className="w-5 h-5" /> :
+             toast.type === 'warning' ? <AlertTriangle className="w-5 h-5" /> :
+             <Info className="w-5 h-5" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-black text-white uppercase tracking-tighter">{toast.title}</h4>
+            <p className="text-xs text-slate-400 mt-1 font-medium leading-relaxed">{toast.message}</p>
+          </div>
+          <button 
+            onClick={() => onRemove(toast.id)}
+            className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+          >
+            <X className="w-4 h-4 text-slate-500" />
+          </button>
+        </motion.div>
+      ))}
+    </AnimatePresence>
+  </div>
+);
 
 const HydrozoaLogo = ({ className = "w-10 h-10" }: { className?: string }) => (
   <div className={cn("relative flex items-center justify-center", className)}>
@@ -289,7 +343,7 @@ const ReactionButton = ({
   );
 };
 
-const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void, onUpdate: () => void }) => {
+const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToast }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void, onUpdate: () => void, addToast: any }) => {
   const getProvider = (id: string) => providers.find(p => p.id === id);
   const [selectedItem, setSelectedItem] = useState<SyncMatrixItem | null>(null);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
@@ -297,6 +351,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
   const handleSyncAll = async () => {
     setIsSyncingAll(true);
     await Promise.all(items.map(item => onManualSync(item.id)));
+    addToast('Batch Sync Initiated', `Manual synchronization triggered for ${items.length} repositories.`, 'info');
     setTimeout(() => setIsSyncingAll(false), 2000);
   };
 
@@ -316,7 +371,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
       </div>
       <AnimatePresence>
         {selectedItem && (
-          <SyncManagementModal item={selectedItem} onClose={() => setSelectedItem(null)} onUpdate={onUpdate} />
+          <SyncManagementModal item={selectedItem} onClose={() => setSelectedItem(null)} onUpdate={onUpdate} addToast={addToast} />
         )}
       </AnimatePresence>
       <div className="hidden md:grid grid-cols-6 gap-4 px-6 py-3 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">
@@ -717,7 +772,7 @@ const SystemsPage = ({ stats, providersInfo, logs, providers }: { stats: SystemS
   );
 };
 
-const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem, onClose: () => void, onUpdate: () => void }) => {
+const SyncManagementModal = ({ item, onClose, onUpdate, addToast }: { item: SyncMatrixItem, onClose: () => void, onUpdate: () => void, addToast: any }) => {
   const [activeSubTab, setActiveSubTab] = useState<'history' | 'settings'>('history');
   const [entities, setEntities] = useState<string[]>(item.entities || ['code']);
   const [isUpdating, setIsSaving] = useState(false);
@@ -734,11 +789,14 @@ const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem
         body: JSON.stringify({ entities })
       });
       if (res.ok) {
+        addToast('Configuration Updated', `Mirror settings for ${item.source_repo} have been applied successfully.`, 'success');
         onUpdate();
         onClose();
+      } else {
+        addToast('Update Failed', 'Server rejected the configuration change.', 'error');
       }
     } catch (err) {
-      console.error("Failed to update sync settings", err);
+      addToast('System Error', 'Failed to communicate with the sync engine.', 'error');
     } finally {
       setIsSaving(false);
     }
@@ -874,7 +932,7 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   return res;
 };
 
-const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary, syncMatrix }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void, syncMatrix: SyncMatrixItem[] }) => {
+const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary, syncMatrix, addToast }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void, syncMatrix: SyncMatrixItem[], addToast: any }) => {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
   const [repos, setRepos] = useState<Record<string, Repository[]>>({});
   const [repoPages, setRepoPages] = useState<Record<string, number>>({});
@@ -1042,11 +1100,11 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
   const saveSelection = async () => {
     if (selectedRepos.size === 0) {
-      alert("Please select at least one repository.");
+      addToast('Selection Required', 'Please select at least one repository to mirror.', 'warning');
       return;
     }
     if (selectedTargetProviders.size === 0) {
-      alert("Please select at least one target provider.");
+      addToast('Target Required', 'Please select at least one target mirror node.', 'warning');
       return;
     }
 
@@ -1437,6 +1495,17 @@ function AppContent() {
   const [passwordResetStatus, setPasswordResetStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
   const [isAppLoading, setIsAppLoading] = useState(true);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const addToast = (title: string, message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts(prev => [...prev, { id, title, message, type }]);
+    setTimeout(() => removeToast(id), 5000);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -1549,16 +1618,19 @@ function AppContent() {
       });
       if (res.ok) {
         setProviders(providers.filter(p => p.id !== id));
+        addToast('Node Decommissioned', 'The provider has been successfully removed from the network.', 'success');
+      } else {
+        addToast('Action Failed', 'The server could not decommission this node.', 'error');
       }
     } catch (err) {
-      console.error("Failed to delete provider", err);
+      addToast('System Error', 'Failed to communicate with the node management system.', 'error');
     }
   };
 
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (passwordReset.new !== passwordReset.confirm) {
-      setPasswordResetStatus({ type: 'error', message: 'New passwords do not match' });
+      addToast('Validation Error', 'New access keys do not match.', 'warning');
       return;
     }
     try {
@@ -1570,16 +1642,16 @@ function AppContent() {
         })
       });
       if (res.ok) {
-        setPasswordResetStatus({ type: 'success', message: 'Password updated successfully' });
+        addToast('Security Updated', 'Access key has been successfully rotated.', 'success');
         setPasswordReset({ current: '', new: '', confirm: '' });
         setIsDefaultPassword(false);
         localStorage.setItem('hydrozoa_is_default', 'false');
       } else {
         const data = await res.json();
-        setPasswordResetStatus({ type: 'error', message: data.error || 'Failed to update password' });
+        addToast('Update Failed', data.error || 'Invalid credentials.', 'error');
       }
     } catch (err) {
-      setPasswordResetStatus({ type: 'error', message: 'System communication error' });
+      addToast('System Error', 'Communication with the security layer failed.', 'error');
     }
   };
 
@@ -1634,12 +1706,12 @@ function AppContent() {
             {loginError && (
               <p className="text-red-400 text-[10px] font-black uppercase tracking-widest text-center">{loginError}</p>
             )}
-            <button 
+            <ReactionButton 
               type="submit" 
-              className="w-full py-4 bg-cyan-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-cyan-400 transition-all glow-cyan active:scale-95"
+              className="w-full py-4 text-xs"
             >
               Initialize Session
-            </button>
+            </ReactionButton>
           </form>
         </motion.div>
       </div>
@@ -1670,6 +1742,7 @@ function AppContent() {
           ...p,
           isSource: p.id === id
         })));
+        addToast('Source Node Updated', 'Primary adapter has been reconfigured.', 'success');
         // Refresh namespaces if we are on the source tab
         if (activeTab === 'source') {
           fetchWithAuth('/api/v1/source/namespaces')
@@ -1678,11 +1751,12 @@ function AppContent() {
         }
       }
     } catch (err) {
-      console.error("Failed to set source", err);
+      addToast('Error', 'Failed to update source provider.', 'error');
     }
   };
 
   const handleManualSync = async (id: string) => {
+    const item = syncMatrix.find(s => s.id === id);
     try {
       const res = await fetchWithAuth(`/api/v1/sync/manual/${id}`, {
         method: 'POST'
@@ -1690,9 +1764,10 @@ function AppContent() {
       if (res.ok) {
         const data = await res.json();
         setSyncMatrix(syncMatrix.map(s => s.id === id ? data.item : s));
+        addToast('Sync Initiated', `Manual mirror started for ${item?.source_repo}`, 'info');
       }
     } catch (err) {
-      console.error("Failed to trigger manual sync", err);
+      addToast('Sync Failed', 'Could not trigger manual synchronization.', 'error');
     }
   };
 
@@ -1706,9 +1781,10 @@ function AppContent() {
         const nsRes = await fetchWithAuth('/api/v1/source/namespaces');
         const nsData = await nsRes.json();
         setNamespaces(nsData);
+        addToast('Discovery Complete', 'Repository cache has been refreshed from source.', 'success');
       }
     } catch (err) {
-      console.error("Failed to refresh repos", err);
+      addToast('Discovery Error', 'Failed to communicate with source provider.', 'error');
     }
   };
 
@@ -1726,22 +1802,29 @@ function AppContent() {
         const newProvider = await res.json();
         setProviders([...providers, newProvider]);
         setIsAddingProvider(false);
+        addToast('Node Registered', `Successfully connected ${newProvider.name} to the network.`, 'success');
+      } else {
+        addToast('Registration Failed', 'Server rejected the provider credentials.', 'error');
       }
     } catch (err) {
-      console.error("Failed to add provider", err);
+      addToast('System Error', 'Could not register new node.', 'error');
     }
   };
 
   const handleReplay = async (id: string) => {
+    const item = dlqItems.find(i => i.id === id);
     try {
       const res = await fetchWithAuth(`/api/v1/system/dlq/${id}/replay`, { 
         method: 'POST'
       });
       if (res.ok) {
         setDlqItems(dlqItems.filter(item => item.id !== id));
+        addToast('Replay Initiated', `Retrying failed mirror for ${item?.repository_id}`, 'success');
+      } else {
+        addToast('Replay Failed', 'The server could not restart this operation.', 'error');
       }
     } catch (err) {
-      console.error("Failed to replay", err);
+      addToast('Error', 'Failed to communicate with DLQ service.', 'error');
     }
   };
 
@@ -1923,12 +2006,12 @@ function AppContent() {
                   <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Your account is using the default access key. Please update it in settings immediately.</p>
                 </div>
               </div>
-              <button 
+              <ReactionButton 
                 onClick={() => setActiveTab('settings')}
-                className="px-6 py-2 bg-amber-500 text-black text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-amber-400 transition-all"
+                className="px-6 py-2 bg-amber-500 text-black hover:bg-amber-400"
               >
                 Update Key
-              </button>
+              </ReactionButton>
             </motion.div>
           )}
         </AnimatePresence>
@@ -1939,20 +2022,18 @@ function AppContent() {
             <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[10px] mt-1">Multipoint Mirror Agent</p>
           </div>
           <div className="flex items-center gap-4 w-full md:w-auto">
-            <button 
+            <ReactionButton 
               onClick={fetchData}
-              className="p-3 glass-card hover:bg-cyan-500/10 transition-all hover:scale-110 active:scale-95 group border-cyan-500/20"
-              title="Refresh Telemetry"
-            >
-              <RefreshCw className="w-5 h-5 text-cyan-400" />
-            </button>
-            <button 
+              variant="ghost"
+              className="p-3 border-cyan-500/20 text-cyan-400"
+              icon={RefreshCw}
+            />
+            <ReactionButton 
               onClick={handleLogout}
-              className="p-3 glass-card hover:bg-red-500/10 transition-all hover:scale-110 active:scale-95 group border-red-500/20"
-              title="Logout"
-            >
-              <X className="w-5 h-5 text-red-400" />
-            </button>
+              variant="ghost"
+              className="p-3 border-red-500/20 text-red-400"
+              icon={X}
+            />
           </div>
         </header>
 
@@ -2149,6 +2230,7 @@ function AppContent() {
                 setNamespaces={setNamespaces} 
                 setProvisioningSummary={setProvisioningSummary}
                 syncMatrix={syncMatrix}
+                addToast={addToast}
               />
 
             </motion.div>
@@ -2162,7 +2244,7 @@ function AppContent() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-6"
             >
-              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} onManualSync={handleManualSync} onUpdate={fetchData} />
+              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} onManualSync={handleManualSync} onUpdate={fetchData} addToast={addToast} />
             </motion.div>
           )}
 
@@ -2176,13 +2258,13 @@ function AppContent() {
             >
               <div className="flex justify-between items-center">
                 <h3 className="text-xl font-black text-white uppercase tracking-tighter">Connected Adapters</h3>
-                <button 
+                <ReactionButton 
                   onClick={() => setIsAddingProvider(true)}
-                  className="flex items-center gap-2 px-6 py-2.5 bg-cyan-500 text-white text-xs font-black uppercase tracking-widest rounded-lg hover:bg-cyan-400 transition-all glow-cyan hover:scale-105 active:scale-95"
+                  icon={Plus}
+                  className="px-6"
                 >
-                  <Plus className="w-4 h-4" />
                   Add Provider
-                </button>
+                </ReactionButton>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -2657,8 +2739,8 @@ function AppContent() {
                         </div>
                         <p className="text-xs text-slate-500 leading-relaxed">Purging logs or resetting the sync matrix is irreversible. Proceed with extreme caution.</p>
                         <div className="flex gap-3">
-                          <ReactionButton variant="danger" className="flex-1" onClick={() => alert("Logs Cleared")}>Clear Logs</ReactionButton>
-                          <ReactionButton variant="danger" className="flex-1" onClick={() => alert("Matrix Reset")}>Reset Matrix</ReactionButton>
+                          <ReactionButton variant="danger" className="flex-1" onClick={() => addToast('Logs Cleared', 'System logs have been purged.', 'info')}>Clear Logs</ReactionButton>
+                          <ReactionButton variant="danger" className="flex-1" onClick={() => addToast('Matrix Reset', 'Synchronization matrix has been reinitialized.', 'warning')}>Reset Matrix</ReactionButton>
                         </div>
                       </div>
                     </div>
@@ -2740,7 +2822,7 @@ function AppContent() {
                       body: JSON.stringify(settings)
                     });
                     if (res.ok) {
-                      alert("Configuration Synchronized Successfully");
+                      addToast('Configuration Synchronized', 'System settings have been updated and persisted.', 'success');
                     }
                   }}
                   variant="primary"
@@ -2756,6 +2838,7 @@ function AppContent() {
       </main>
       </div>
       </div>
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );
 }
