@@ -2025,6 +2025,9 @@ async function startServer() {
 
     await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), id]);
     
+    // Trigger sync immediately in background
+    processSyncItem({ ...item, targets }).catch(err => sysLog.error(`Manual sync background error: ${err}`));
+    
     await addLog({
       level: "info",
       code: "H-SYNC-MANUAL",

@@ -2377,23 +2377,25 @@ function AppContent() {
                           <span className="text-[10px] font-black text-red-400 uppercase tracking-widest">Decommission Node</span>
                         </div>
                         <p className="text-xs text-slate-500 leading-relaxed">Removing this node will halt all active synchronizations and purge local cache. This action is irreversible.</p>
-                        <button 
+                        <ReactionButton 
                           onClick={() => {
                             handleDeleteProvider(editingProvider.id);
                             setEditingProvider(null);
                           }}
-                          className="w-full py-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-red-500/20"
+                          variant="danger"
+                          className="w-full py-4"
                         >
                           Confirm Decommissioning
-                        </button>
+                        </ReactionButton>
                       </div>
 
-                      <button 
+                      <ReactionButton 
                         onClick={() => setEditingProvider(null)}
-                        className="w-full py-4 glass-card hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all"
+                        variant="ghost"
+                        className="w-full py-4"
                       >
                         Close
-                      </button>
+                      </ReactionButton>
                     </div>
                   </motion.div>
                 </div>
@@ -2413,9 +2415,7 @@ function AppContent() {
                 </div>
                 <h3 className="text-2xl font-black text-white uppercase tracking-tighter">Provisioning Summary</h3>
               </div>
-              <button onClick={() => setProvisioningSummary(null)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
-                <X className="w-6 h-6 text-slate-500" />
-              </button>
+              <ReactionButton onClick={() => setProvisioningSummary(null)} variant="ghost" className="p-2" icon={X} />
             </div>
 
             <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
@@ -2437,12 +2437,13 @@ function AppContent() {
               ))}
             </div>
 
-            <button 
+            <ReactionButton 
               onClick={() => setProvisioningSummary(null)}
-              className="w-full mt-8 py-4 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-cyan-400 transition-all glow-cyan"
+              variant="primary"
+              className="w-full mt-8 py-4"
             >
               Continue to Dashboard
-            </button>
+            </ReactionButton>
           </motion.div>
         </div>
       )}
@@ -2494,8 +2495,20 @@ function AppContent() {
                 <input name="webhookSecret" type="password" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="Secret for HMAC verification" />
               </div>
               <div className="flex gap-4 pt-6">
-                <button type="button" onClick={() => setIsAddingProvider(false)} className="flex-1 px-6 py-3 glass-card hover:bg-white/10 text-xs font-black uppercase tracking-widest text-white transition-all">Cancel</button>
-                <button type="submit" className="flex-1 px-6 py-3 bg-cyan-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-cyan-400 transition-all glow-cyan">Save Node</button>
+                <ReactionButton 
+                  type="button" 
+                  onClick={() => setIsAddingProvider(false)} 
+                  variant="ghost"
+                  className="flex-1 py-3"
+                >
+                  Cancel
+                </ReactionButton>
+                <ReactionButton 
+                  type="submit" 
+                  className="flex-1 py-3"
+                >
+                  Save Node
+                </ReactionButton>
               </div>
             </form>
           </motion.div>
@@ -2559,13 +2572,12 @@ function AppContent() {
                           <td className="px-6 py-4 text-xs text-red-400/80 font-medium">{item.failure_reason}</td>
                           <td className="px-6 py-4 text-[10px] text-slate-500 font-mono">{new Date(item.last_attempt).toLocaleString()}</td>
                           <td className="px-6 py-4 text-right">
-                            <button 
+                            <ReactionButton 
                               onClick={() => handleReplay(item.id)}
-                              className="p-2 hover:bg-cyan-500/10 rounded-lg transition-all group/btn"
-                              title="Replay Sync"
-                            >
-                              <RefreshCw className="w-4 h-4 text-cyan-400 group-hover/btn:rotate-180 transition-transform duration-500" />
-                            </button>
+                              variant="ghost"
+                              className="p-2 border-cyan-500/20"
+                              icon={RefreshCw}
+                            />
                           </td>
                         </tr>
                       ))}
