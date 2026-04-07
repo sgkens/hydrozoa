@@ -356,17 +356,12 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   const isPrivate = visibility === 'private';
   
   // Append mirror link to description if available
-  let finalDescription = description || "";
+  let finalDescription = (description || "").replace(/[\x00-\x1F\x7F]/g, ' ');
   if (sourceUrl) {
     const mirrorNote = `\n\nManaged by Hydrozoa - Mirrored from: ${sourceUrl}`;
     if (!finalDescription.includes(mirrorNote)) {
       finalDescription += mirrorNote;
     }
-  }
-
-  // Sanitize for GitHub specifically as it rejects control characters
-  if (type === "github") {
-    finalDescription = sanitizeForGithub(finalDescription);
   }
   let baseUrl = provider.url.replace(/\/$/, '');
   if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
@@ -593,7 +588,7 @@ async function syncCode(source: any, target: any, repoName: string, sourceToken:
   }
 }
 
-async function syncIssues(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+async function syncIssues(source: any, target: any, repoName: string, sourceToken: string, targetToken: string, milestoneMap?: Record<string, any>) {
   const sourceBase = source.url.replace(/\/$/, "");
   const targetBase = target.url.replace(/\/$/, "");
   const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
@@ -645,6 +640,13 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
       const title = issue.title;
       const body = source.type.toLowerCase() === "github" ? issue.body : (issue.description || issue.body);
       
+      // Resolve milestone
+      let targetMilestoneId = null;
+      if (issue.milestone && milestoneMap) {
+        const sourceMsTitle = typeof issue.milestone === 'string' ? issue.milestone : issue.milestone.title;
+        targetMilestoneId = milestoneMap[sourceMsTitle];
+      }
+
       // Normalize labels
       let labels: string[] = [];
       if (Array.isArray(issue.labels)) {
@@ -664,7 +666,12 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
           createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, description: body, labels: labels.join(',') })
+            body: JSON.stringify({ 
+              title, 
+              description: body, 
+              labels: labels.join(','),
+              milestone_id: targetMilestoneId 
+            })
           });
         } else if (target.type.toLowerCase() === "github") {
           createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/issues`, {
@@ -673,11 +680,12 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
             body: JSON.stringify({ 
               title: sanitizeForGithub(title), 
               body: sanitizeForGithub(body), 
-              labels 
+              labels,
+              milestone: targetMilestoneId
             })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
-          // Bitbucket doesn't have native 'labels' on issues API 2.0 in the same way, skipping or mapping to kind
+          // Bitbucket doesn't have native 'labels' or standard 'milestone' on issues API 2.0
           createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
@@ -687,7 +695,7 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
           createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, body, labels })
+            body: JSON.stringify({ title, body, labels, milestone: targetMilestoneId })
           });
         }
 
@@ -708,7 +716,7 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
   }
 }
 
-async function syncMilestones(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+async function syncMilestones(source: any, target: any, repoName: string, sourceToken: string, targetToken: string): Promise<Record<string, any>> {
   const sourceBase = source.url.replace(/\/$/, "");
   const targetBase = target.url.replace(/\/$/, "");
   const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
@@ -716,6 +724,8 @@ async function syncMilestones(source: any, target: any, repoName: string, source
 
   Object.assign(headersSource, getProviderHeaders(source, sourceToken));
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
+
+  const milestoneMap: Record<string, any> = {};
 
   try {
     let sourceMilestones = [];
@@ -733,7 +743,7 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       sourceMilestones = Array.isArray(data) ? data : (data.values || []);
     }
 
-    if (!Array.isArray(sourceMilestones)) return false;
+    if (!Array.isArray(sourceMilestones)) return {};
 
     let targetMilestones = [];
     const targetPath = target.type.toLowerCase().includes("gitlab")
@@ -750,7 +760,11 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       targetMilestones = Array.isArray(data) ? data : (data.values || []);
     }
 
-    const existingTitles = new Set(targetMilestones.map((m: any) => m.title));
+    // Map existing target milestones
+    targetMilestones.forEach((m: any) => {
+      milestoneMap[m.title] = m.id || m.iid || m.number;
+    });
+
     let created = 0;
     let skipped = 0;
 
@@ -758,7 +772,7 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       const title = ms.title;
       const description = ms.description;
 
-      if (existingTitles.has(title)) {
+      if (milestoneMap[title]) {
         skipped++;
         continue;
       }
@@ -795,6 +809,8 @@ async function syncMilestones(source: any, target: any, repoName: string, source
         }
 
         if (createRes && createRes.ok) {
+          const newMs = await createRes.json();
+          milestoneMap[title] = newMs.id || newMs.iid || newMs.number;
           created++;
         } else {
           sysLog.warn(`Failed to create milestone "${title}" on ${target.name}: ${createRes ? await createRes.text() : "Unknown error"}`);
@@ -804,10 +820,10 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       }
     }
     sysLog.success(`Milestone sync complete for ${repoName}: ${created} created, ${skipped} skipped.`);
-    return true;
+    return milestoneMap;
   } catch (err) {
     sysLog.error(`Milestone sync failed for ${repoName}: ${err}`);
-    return false;
+    return milestoneMap;
   }
 }
 async function syncReleases(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
@@ -903,7 +919,55 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
         }
 
         if (createRes && createRes.ok) {
+          const createdRelease = await createRes.json();
           created++;
+
+          // --- Asset Mirroring ---
+          // Extract source assets
+          let sourceAssets = [];
+          if (source.type === 'github') sourceAssets = rel.assets || [];
+          else if (source.type.includes('gitlab')) sourceAssets = (rel.assets && rel.assets.links) || [];
+          else if (['gitea', 'forgejo'].includes(source.type)) sourceAssets = rel.assets || [];
+
+          for (const asset of sourceAssets) {
+            try {
+              const assetName = asset.name;
+              const downloadUrl = asset.browser_download_url || asset.url;
+              if (!downloadUrl) continue;
+
+              sysLog.info(`Mirroring release asset: ${assetName} for ${tagName}`);
+              
+              // Download asset
+              const assetRes = await fetch(downloadUrl, { headers: headersSource });
+              if (!assetRes.ok) continue;
+              const assetBuffer = await assetRes.arrayBuffer();
+
+              // Upload to target
+              if (target.type === 'github') {
+                // GitHub uses a separate upload URL
+                const uploadUrl = createdRelease.upload_url.replace('{?name,label}', `?name=${encodeURIComponent(assetName)}`);
+                await fetch(uploadUrl, {
+                  method: 'POST',
+                  headers: { 
+                    ...headersTarget, 
+                    'Content-Type': asset.content_type || 'application/octet-stream',
+                    'Content-Length': assetBuffer.byteLength.toString()
+                  },
+                  body: assetBuffer
+                });
+              } else if (target.type.includes('gitlab')) {
+                sysLog.info(`GitLab asset upload for ${assetName} skipped (requires Generic Package API)`);
+              } else if (['gitea', 'forgejo'].includes(target.type)) {
+                await fetch(`${targetBase}/api/v1/repos/${repoName}/releases/${createdRelease.id}/assets`, {
+                  method: 'POST',
+                  headers: headersTarget,
+                  body: JSON.stringify({ name: assetName, attachment: Buffer.from(assetBuffer).toString('base64') })
+                });
+              }
+            } catch (assetErr) {
+              sysLog.error(`Failed to mirror asset ${asset.name}: ${assetErr}`);
+            }
+          }
         } else {
           sysLog.warn(`Failed to create release "${tagName}" on ${target.name}: ${createRes ? await createRes.text() : "Unknown error"}`);
         }
@@ -987,11 +1051,7 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
           createRes = await trackedFetch(target.id, `${targetBase}/gists`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ 
-              description: sanitizeForGithub(title), 
-              public: false, 
-              files: { [fileName]: { content: sanitizeForGithub(content) } } 
-            })
+            body: JSON.stringify({ description: title, public: false, files: { [fileName]: { content } } })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
           createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/snippets`, {
@@ -1047,11 +1107,19 @@ async function processSyncItem(item: any) {
 
       if (entities.includes('code')) await syncCode(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       
+      let milestoneMap = {};
+      if (entities.includes('milestones')) {
+        milestoneMap = await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      }
+
       // Step 2: Bidirectional Sync (Target -> Source) if enabled
       if (settings?.bidirectional_sync) {
         sysLog.info(`Bidirectional sync active for ${item.source_repo}. Performing reverse sync...`);
-        if (entities.includes('issues')) await syncIssues(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
-        if (entities.includes('milestones')) await syncMilestones(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        let revMilestoneMap = {};
+        if (entities.includes('milestones')) {
+          revMilestoneMap = await syncMilestones(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        }
+        if (entities.includes('issues')) await syncIssues(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken, revMilestoneMap);
         if (entities.includes('releases')) await syncReleases(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
         if (entities.includes('snippets')) await syncSnippets(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
       }
@@ -1059,11 +1127,7 @@ async function processSyncItem(item: any) {
       targetRef.progress = 60;
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
-      if (entities.includes('issues')) await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
-      targetRef.progress = 80;
-      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
-
-      if (entities.includes('milestones')) await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      if (entities.includes('issues')) await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken, milestoneMap);
       if (entities.includes('releases')) await syncReleases(sourceProvider, targetProvider, item.source_repo, targetToken, sourceToken);
       if (entities.includes('snippets')) await syncSnippets(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       
