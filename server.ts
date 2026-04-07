@@ -632,6 +632,14 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
 
       const title = issue.title;
       const body = source.type.toLowerCase() === "github" ? issue.body : (issue.description || issue.body);
+      
+      // Normalize labels
+      let labels: string[] = [];
+      if (Array.isArray(issue.labels)) {
+        labels = issue.labels.map((l: any) => typeof l === 'string' ? l : (l.name || l.title));
+      } else if (typeof issue.labels === 'string') {
+        labels = issue.labels.split(',').map(s => s.trim());
+      }
 
       if (existingTitles.has(title)) {
         skipped++;
@@ -644,15 +652,16 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
           createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, description: body })
+            body: JSON.stringify({ title, description: body, labels: labels.join(',') })
           });
         } else if (target.type.toLowerCase() === "github") {
           createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, body })
+            body: JSON.stringify({ title, body, labels })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
+          // Bitbucket doesn't have native 'labels' on issues API 2.0 in the same way, skipping or mapping to kind
           createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
@@ -662,7 +671,7 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
           createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, body })
+            body: JSON.stringify({ title, body, labels })
           });
         }
 
@@ -1001,6 +1010,7 @@ async function processSyncItem(item: any) {
     if (!targetProvider) continue;
 
     const targetToken = decrypt(targetProvider.token);
+    const syncStart = Date.now();
 
     try {
       // Step 1: Forward Sync (Source -> Target)
@@ -1027,12 +1037,20 @@ async function processSyncItem(item: any) {
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
       if (entities.includes('milestones')) await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
-      if (entities.includes('releases')) await syncReleases(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      if (entities.includes('releases')) await syncReleases(sourceProvider, targetProvider, item.source_repo, targetToken, sourceToken);
       if (entities.includes('snippets')) await syncSnippets(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       
+      const durationSeconds = Math.floor((Date.now() - syncStart) / 1000);
+      const durationStr = `${durationSeconds}s`;
+
       targetRef.status = 'synced';
       targetRef.progress = 100;
       targetRef.last_sync = new Date().toISOString();
+      
+      await pool.query(
+        'UPDATE sync_matrix SET targets = $1, last_sync_duration = $2 WHERE id = $3', 
+        [JSON.stringify(item.targets), durationStr, item.id]
+      );
       
       await addLog({
         level: "info",

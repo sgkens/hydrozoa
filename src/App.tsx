@@ -245,8 +245,8 @@ const ReactionButton = ({
   icon: Icon,
   type = 'button'
 }: { 
-  children: React.ReactNode, 
-  onClick?: () => void, 
+  children?: React.ReactNode, 
+  onClick?: (e?: any) => void, 
   isLoading?: boolean, 
   className?: string, 
   disabled?: boolean,
@@ -474,13 +474,16 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
                       </div>
                     );
                   })}
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); onManualSync(item.id); }}
-                    className="p-2 glass-card hover:bg-cyan-500/10 text-cyan-400 transition-all rounded-xl border border-cyan-500/20"
-                    title="Manual Sync"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                  </button>
+                  <ReactionButton 
+                    onClick={(e: any) => { 
+                      e.stopPropagation(); 
+                      onManualSync(item.id); 
+                    }}
+                    isLoading={item.targets.some(t => t.status === 'syncing')}
+                    icon={RefreshCw}
+                    variant="ghost"
+                    className="p-2 border-cyan-500/20 text-cyan-400"
+                  />
                 </div>
               </div>
             </div>
@@ -1287,15 +1290,14 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                   <div className="p-4 space-y-2">
                     {repos[ns.id]?.map((repo) => {
                       const isSynced = syncMatrix.some(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`);
-                      const isSelected = selectedRepos.has(repo.id);
+                      const isSelected = selectedRepos.has(repo.id) || isSynced;
                       
                       return (
                         <div 
                           key={repo.id} 
                           className={cn(
                             "flex items-center justify-between p-3 rounded-lg transition-colors group cursor-pointer",
-                            isSelected ? "bg-white/5 border border-white/5" : "hover:bg-white/5 border border-transparent",
-                            isSynced && !isSelected ? "opacity-80" : ""
+                            isSelected ? "bg-white/5 border border-white/5" : "hover:bg-white/5 border border-transparent"
                           )}
                           onClick={() => handleRepoCheck(ns.id, repo.id)}
                         >
@@ -1317,7 +1319,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                                   {repo.visibility}
                                 </span>
                                 {isSynced && (
-                                  <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded uppercase tracking-widest border border-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.1)]">Synced</span>
+                                  <span className="text-[7px] font-black bg-cyan-500/10 text-cyan-400 px-1.5 py-0.5 rounded uppercase tracking-widest border border-cyan-500/20 shadow-[0_0_10px_rgba(0,243,255,0.1)]">Configured</span>
                                 )}
                               </div>
                               <div className="flex gap-2 items-center mt-1">
@@ -2038,66 +2040,95 @@ function AppContent() {
                 </div>
               </div>
 
-              <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
-                    <RefreshCw className="w-6 h-6 text-cyan-400" />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+                        <Activity className="w-6 h-6 text-cyan-400" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-black text-white uppercase tracking-tighter">Sync Performance</h3>
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Duration of latest mirroring operations</p>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-xl font-black text-white uppercase tracking-tighter">Active Synchronizations</h3>
-                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Real-time status of running operations</p>
+                  <div className="h-[250px]">
+                    <Chart
+                      options={{
+                        chart: { type: 'bar', toolbar: { show: false }, background: 'transparent' },
+                        plotOptions: { bar: { borderRadius: 4, horizontal: true, barHeight: '40%' } },
+                        dataLabels: { enabled: false },
+                        grid: { borderColor: '#1e293b', strokeDashArray: 4 },
+                        xaxis: { 
+                          categories: syncMatrix.slice(0, 5).map(m => m.source_repo.split('/').pop()),
+                          labels: { style: { colors: '#64748b', fontSize: '10px', fontWeight: 800 } } 
+                        },
+                        yaxis: { labels: { style: { colors: '#94a3b8', fontSize: '10px', fontWeight: 800 } } },
+                        colors: ['#00f3ff'],
+                        theme: { mode: 'dark' }
+                      }}
+                      series={[{ 
+                        name: 'Duration (seconds)', 
+                        data: syncMatrix.slice(0, 5).map(m => parseInt(m.last_sync_duration?.replace('s', '') || '0')) 
+                      }]}
+                      type="bar"
+                      height="100%"
+                    />
                   </div>
                 </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).length === 0 ? (
-                    <div className="col-span-full py-8 text-center bg-black/20 rounded-2xl border border-dashed border-white/5">
-                      <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">No operations currently running</p>
+
+                <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+                      <RefreshCw className="w-6 h-6 text-cyan-400" />
                     </div>
-                  ) : (
-                    syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).map((item, idx) => (
-                      <motion.div
-                        key={item.id}
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ delay: idx * 0.1 }}
-                        className="p-4 rounded-xl bg-white/5 border border-cyan-500/20 relative overflow-hidden group"
-                      >
-                        <div className="absolute top-0 right-0 w-16 h-16 blur-2xl -mr-8 -mt-8 bg-cyan-500/20 animate-pulse" />
-                        <div className="flex items-center justify-between mb-3 relative z-10">
-                          <p className="text-sm font-black text-white truncate max-w-[70%]">{item.source_repo}</p>
-                          <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-[8px] font-black uppercase tracking-widest rounded shadow-[0_0_10px_rgba(0,243,255,0.2)] animate-pulse">Syncing</span>
-                        </div>
-                        <div className="flex gap-1 flex-wrap mb-4 relative z-10">
-                          {(item.entities || ['code']).map(ent => (
-                            <span key={ent} className="px-1.5 py-0.5 bg-white/10 text-slate-400 text-[8px] font-black uppercase tracking-tighter rounded border border-white/10">
-                              {ent}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="space-y-2 relative z-10">
-                          {item.targets.filter(t => t.status === 'syncing').map((target, tIdx) => {
-                            const p = providers.find(prov => prov.id === target.provider_id);
-                            return (
-                              <div key={tIdx} className="flex flex-col gap-1.5 p-2 bg-black/40 rounded-lg">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p?.name || 'Unknown'}</span>
-                                  <span className="text-[9px] font-mono text-cyan-400">{target.progress || 0}%</span>
+                    <div>
+                      <h3 className="text-xl font-black text-white uppercase tracking-tighter">Active Synchronizations</h3>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Real-time status of running operations</p>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4 max-h-[250px] overflow-y-auto pr-2 custom-scrollbar">
+                    {syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).length === 0 ? (
+                      <div className="py-8 text-center bg-black/20 rounded-2xl border border-dashed border-white/5">
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">No operations currently running</p>
+                      </div>
+                    ) : (
+                      syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).map((item, idx) => (
+                        <div
+                          key={item.id}
+                          className="p-4 rounded-xl bg-white/5 border border-cyan-500/20 relative overflow-hidden group"
+                        >
+                          <div className="absolute top-0 right-0 w-16 h-16 blur-2xl -mr-8 -mt-8 bg-cyan-500/20 animate-pulse" />
+                          <div className="flex items-center justify-between mb-3 relative z-10">
+                            <p className="text-sm font-black text-white truncate max-w-[70%]">{item.source_repo}</p>
+                            <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-[8px] font-black uppercase tracking-widest rounded shadow-[0_0_10px_rgba(0,243,255,0.2)] animate-pulse">Syncing</span>
+                          </div>
+                          <div className="space-y-2 relative z-10">
+                            {item.targets.filter(t => t.status === 'syncing').map((target, tIdx) => {
+                              const p = providers.find(prov => prov.id === target.provider_id);
+                              return (
+                                <div key={tIdx} className="flex flex-col gap-1.5 p-2 bg-black/40 rounded-lg">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p?.name || 'Unknown'}</span>
+                                    <span className="text-[9px] font-mono text-cyan-400">{target.progress || 0}%</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                    <motion.div 
+                                      initial={{ width: 0 }}
+                                      animate={{ width: `${target.progress || 0}%` }}
+                                      className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,243,255,0.5)]"
+                                    />
+                                  </div>
                                 </div>
-                                <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
-                                  <motion.div 
-                                    initial={{ width: 0 }}
-                                    animate={{ width: `${target.progress || 0}%` }}
-                                    className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,243,255,0.5)]"
-                                  />
-                                </div>
-                              </div>
-                            );
-                          })}
+                              );
+                            })}
+                          </div>
                         </div>
-                      </motion.div>
-                    ))
-                  )}
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
             </motion.div>
