@@ -1013,7 +1013,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
       setHasMoreRepos(prev => ({ ...prev, [nsId]: newRepos.length === perPage }));
       setRepoPages(prev => ({ ...prev, [nsId]: page }));
     } catch (err) {
-      console.error("Failed to fetch repos", err);
+      addToast('Discovery Failed', 'Could not fetch repositories for this namespace.', 'error');
     } finally {
       setIsLoadingRepos(prev => ({ ...prev, [nsId]: false }));
     }
@@ -1134,9 +1134,12 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
       if (res.ok) {
         const data = await res.json();
         setProvisioningSummary(data.summary);
+        addToast('Mirroring Initiated', `${selectedRepos.size} repositories are now being provisioned and synced.`, 'success');
+      } else {
+        addToast('Provisioning Failed', 'The server encountered an error during target setup.', 'error');
       }
     } catch (err) {
-      console.error("Failed to save selection", err);
+      addToast('Connection Error', 'Failed to communicate with the Hydrozoa backend.', 'error');
     } finally {
       setIsSaving(false);
     }
@@ -1572,7 +1575,7 @@ function AppContent() {
       setSystemStats(statsData);
       setProvidersInfo(infoData.providers);
     } catch (err) {
-      console.error("Failed to fetch data", err);
+      addToast('Data Fetch Error', 'Failed to retrieve telemetry and state from server.', 'error');
     }
   };
 
@@ -1584,7 +1587,7 @@ function AppContent() {
         setSettings(data);
       }
     } catch (err) {
-      console.error("Failed to fetch settings", err);
+      addToast('Settings Error', 'Failed to retrieve system configuration.', 'error');
     }
   };
 
