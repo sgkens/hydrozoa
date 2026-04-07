@@ -295,6 +295,13 @@ function getProviderHeaders(provider: any, token: string) {
   return {};
 }
 
+function sanitizeForGithub(text: string): string {
+  if (!text) return "";
+  // Strip C0 and C1 control characters (\x00-\x1F, \x7F-\x9F)
+  // GitHub API rejects these in descriptions and other fields
+  return text.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+}
+
 async function getProviderUser(provider: any, token: string): Promise<string | null> {
   const type = provider.type.toLowerCase();
   let baseUrl = provider.url.replace(/\/$/, '');
@@ -349,12 +356,17 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   const isPrivate = visibility === 'private';
   
   // Append mirror link to description if available
-  let finalDescription = (description || "").replace(/[\x00-\x1F\x7F]/g, ' ');
+  let finalDescription = description || "";
   if (sourceUrl) {
     const mirrorNote = `\n\nManaged by Hydrozoa - Mirrored from: ${sourceUrl}`;
     if (!finalDescription.includes(mirrorNote)) {
       finalDescription += mirrorNote;
     }
+  }
+
+  // Sanitize for GitHub specifically as it rejects control characters
+  if (type === "github") {
+    finalDescription = sanitizeForGithub(finalDescription);
   }
   let baseUrl = provider.url.replace(/\/$/, '');
   if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
@@ -658,7 +670,11 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
           createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, body, labels })
+            body: JSON.stringify({ 
+              title: sanitizeForGithub(title), 
+              body: sanitizeForGithub(body), 
+              labels 
+            })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
           // Bitbucket doesn't have native 'labels' on issues API 2.0 in the same way, skipping or mapping to kind
@@ -759,7 +775,10 @@ async function syncMilestones(source: any, target: any, repoName: string, source
           createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/milestones`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, description })
+            body: JSON.stringify({ 
+              title: sanitizeForGithub(title), 
+              description: sanitizeForGithub(description) 
+            })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
           createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/issues/milestones`, {
@@ -863,7 +882,11 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
           createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/releases`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ name, tag_name: tagName, body })
+            body: JSON.stringify({ 
+              name: sanitizeForGithub(name), 
+              tag_name: tagName, 
+              body: sanitizeForGithub(body) 
+            })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
           createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/refs/tags`, {
@@ -964,7 +987,11 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
           createRes = await trackedFetch(target.id, `${targetBase}/gists`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ description: title, public: false, files: { [fileName]: { content } } })
+            body: JSON.stringify({ 
+              description: sanitizeForGithub(title), 
+              public: false, 
+              files: { [fileName]: { content: sanitizeForGithub(content) } } 
+            })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
           createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/snippets`, {
