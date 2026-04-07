@@ -52,6 +52,15 @@ const sysLog = {
   debug: (msg: string) => console.log(`${colors.gray}${colors.dim}🔍 ${msg}${colors.reset}`)
 };
 
+process.on('uncaughtException', (err) => {
+  sysLog.error(`Uncaught Exception: ${err.message}`);
+  console.error(err.stack);
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  sysLog.error(`Unhandled Rejection: ${reason?.message || reason}`);
+});
+
 const printHeader = () => {
   console.log(`${colors.cyan}${colors.bright}
    __  __           __                                
@@ -570,9 +579,9 @@ async function syncCode(source: any, target: any, repoName: string, sourceToken:
     
     try {
       sysLog.info(`Cloning from source: ${repoName}...`);
-      await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`);
+      await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`, { maxBuffer: 1024 * 1024 * 50 });
       sysLog.info(`Successfully cloned ${repoName}. Pushing to target...`);
-      await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`);
+      await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`, { maxBuffer: 1024 * 1024 * 50 });
       sysLog.success(`Code sync successful for ${repoName} -> ${target.name}`);
     } catch (gitErr: any) {
       sysLog.error(`Git operation failed for ${repoName}: ${gitErr.message}`);
@@ -1766,9 +1775,21 @@ async function startServer() {
       // Trigger sync for all matrix items using this provider as source
       const matrixRes = await pool.query('SELECT * FROM sync_matrix WHERE source_provider = $1', [providerId]);
       
-      for (const item of matrixRes.rows) {
-        processSyncItem(item).catch(err => sysLog.error(`Webhook-triggered sync failed for ${item.source_repo}: ${err}`));
-      }
+      const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
+      const maxConcurrent = settingsRes.rows[0]?.max_concurrent_syncs || 5;
+
+      // Run staggered sync in the background so we don't hold the webhook response open
+      const runWebhookSync = async () => {
+        for (let i = 0; i < matrixRes.rows.length; i += maxConcurrent) {
+          const chunk = matrixRes.rows.slice(i, i + maxConcurrent);
+          await Promise.all(chunk.map(item => processSyncItem(item).catch(err => sysLog.error(`Webhook sync error: ${err}`))));
+          if (i + maxConcurrent < matrixRes.rows.length) {
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        }
+      };
+      
+      runWebhookSync().catch(err => sysLog.error(`Webhook background sync failed: ${err}`));
 
       res.status(202).json({ message: "Sync triggered" });
     } catch (err) {
