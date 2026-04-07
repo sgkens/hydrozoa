@@ -24,7 +24,11 @@ import {
   LogOut,
   Flag,
   Tag,
-  Book
+  Book,
+  Copy,
+  Check,
+  Info,
+  XCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -36,11 +40,12 @@ interface Namespace {
   type: string;
   repo_count: number;
 }
-
 interface Repository {
   id: string;
   name: string;
   description: string;
+  visibility: 'public' | 'private' | 'internal';
+  web_url?: string;
 }
 interface Provider {
   id: string;
@@ -112,7 +117,59 @@ interface ProviderInfo {
   status: string;
 }
 
+interface Toast {
+  id: string;
+  title: string;
+  message: string;
+  type: 'success' | 'error' | 'info' | 'warning';
+}
+
 // --- Components ---
+
+const ToastContainer = ({ toasts, onRemove }: { toasts: Toast[], onRemove: (id: string) => void }) => (
+  <div className="fixed bottom-6 right-6 z-[9999] space-y-3 pointer-events-none">
+    <AnimatePresence>
+      {toasts.map((toast) => (
+        <motion.div
+          key={toast.id}
+          initial={{ opacity: 0, x: 20, scale: 0.95 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+          className={cn(
+            "pointer-events-auto flex items-start gap-4 p-4 rounded-2xl glass-card border min-w-[320px] max-w-[400px] shadow-2xl",
+            toast.type === 'success' ? "border-emerald-500/30 bg-emerald-500/5" :
+            toast.type === 'error' ? "border-red-500/30 bg-red-500/5" :
+            toast.type === 'warning' ? "border-amber-500/30 bg-amber-500/5" :
+            "border-cyan-500/30 bg-cyan-500/5"
+          )}
+        >
+          <div className={cn(
+            "p-2 rounded-xl",
+            toast.type === 'success' ? "bg-emerald-500/20 text-emerald-400" :
+            toast.type === 'error' ? "bg-red-500/20 text-red-400" :
+            toast.type === 'warning' ? "bg-amber-500/20 text-amber-400" :
+            "bg-cyan-500/20 text-cyan-400"
+          )}>
+            {toast.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> :
+             toast.type === 'error' ? <XCircle className="w-5 h-5" /> :
+             toast.type === 'warning' ? <AlertTriangle className="w-5 h-5" /> :
+             <Info className="w-5 h-5" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-black text-white uppercase tracking-tighter">{toast.title}</h4>
+            <p className="text-xs text-slate-400 mt-1 font-medium leading-relaxed">{toast.message}</p>
+          </div>
+          <button 
+            onClick={() => onRemove(toast.id)}
+            className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+          >
+            <X className="w-4 h-4 text-slate-500" />
+          </button>
+        </motion.div>
+      ))}
+    </AnimatePresence>
+  </div>
+);
 
 const HydrozoaLogo = ({ className = "w-10 h-10" }: { className?: string }) => (
   <div className={cn("relative flex items-center justify-center", className)}>
@@ -232,25 +289,89 @@ const StatCard = ({ title, value, icon: Icon, color, delay }: { title: string, v
   </motion.div>
 );
 
-const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void, onUpdate: () => void }) => {
+const ReactionButton = ({ 
+  children, 
+  onClick, 
+  isLoading, 
+  className, 
+  disabled, 
+  variant = 'primary',
+  icon: Icon,
+  type = 'button'
+}: { 
+  children?: React.ReactNode, 
+  onClick?: (e?: any) => void, 
+  isLoading?: boolean, 
+  className?: string, 
+  disabled?: boolean,
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger',
+  icon?: any,
+  type?: 'button' | 'submit' | 'reset'
+}) => {
+  const variants = {
+    primary: "bg-cyan-500 text-white hover:bg-cyan-400 glow-cyan",
+    secondary: "bg-magenta-500 text-white hover:bg-magenta-400 glow-magenta",
+    ghost: "bg-white/5 text-slate-300 hover:bg-white/10 border border-white/10",
+    danger: "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20"
+  };
+
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled || isLoading}
+      className={cn(
+        "relative flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 overflow-hidden group",
+        variants[variant],
+        className
+      )}
+    >
+      {isLoading && (
+        <motion.div 
+          className="absolute inset-0 bg-white/10 flex items-center justify-center"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+        >
+          <RefreshCw className="w-4 h-4 animate-spin text-white" />
+        </motion.div>
+      )}
+      <div className={cn("flex items-center gap-2 transition-all", isLoading ? "opacity-0 scale-90" : "opacity-100 scale-100")}>
+        {Icon && <Icon className={cn("w-3.5 h-3.5", !isLoading && "group-hover:rotate-12 transition-transform")} />}
+        {children}
+      </div>
+    </button>
+  );
+};
+
+const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToast }: { items: SyncMatrixItem[], providers: Provider[], settings: any, onManualSync: (id: string) => void, onUpdate: () => void, addToast: any }) => {
   const getProvider = (id: string) => providers.find(p => p.id === id);
   const [selectedItem, setSelectedItem] = useState<SyncMatrixItem | null>(null);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+
+  const handleSyncAll = async () => {
+    setIsSyncingAll(true);
+    await Promise.all(items.map(item => onManualSync(item.id)));
+    addToast('Batch Sync Initiated', `Manual synchronization triggered for ${items.length} repositories.`, 'info');
+    setTimeout(() => setIsSyncingAll(false), 2000);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center mb-2">
         <h3 className="text-xl font-black text-white uppercase tracking-tighter">Sync Matrix</h3>
-        <button
-          onClick={() => items.forEach(item => onManualSync(item.id))}
-          className="flex items-center gap-2 px-4 py-2 bg-white/5 text-cyan-400 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/10 transition-all border border-cyan-500/20"
+        <ReactionButton
+          onClick={handleSyncAll}
+          isLoading={isSyncingAll}
+          icon={RefreshCw}
+          variant="ghost"
+          className="text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/10"
         >
-          <RefreshCw className="w-3 h-3" />
           Sync All Nodes
-        </button>
+        </ReactionButton>
       </div>
       <AnimatePresence>
         {selectedItem && (
-          <SyncManagementModal item={selectedItem} onClose={() => setSelectedItem(null)} onUpdate={onUpdate} />
+          <SyncManagementModal item={selectedItem} onClose={() => setSelectedItem(null)} onUpdate={onUpdate} addToast={addToast} />
         )}
       </AnimatePresence>
       <div className="hidden md:grid grid-cols-6 gap-4 px-6 py-3 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">
@@ -327,7 +448,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
 
               <div className="col-span-1">
                 <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-[10px] font-black text-cyan-400 uppercase tracking-widest">
+                  <div className="flex items-center gap-2 text-[10px] font-black text-magenta-400 uppercase tracking-widest">
                     <Terminal className="w-3 h-3" />
                     {item.branch || 'main'}
                   </div>
@@ -336,7 +457,6 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
                   </div>
                 </div>
               </div>
-
               <div className="col-span-1">
                 <div className="space-y-1">
                   <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Duration: {item.last_sync_duration || 'N/A'}</div>
@@ -409,13 +529,16 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
                       </div>
                     );
                   })}
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); onManualSync(item.id); }}
-                    className="p-2 glass-card hover:bg-cyan-500/10 text-cyan-400 transition-all rounded-xl border border-cyan-500/20"
-                    title="Manual Sync"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                  </button>
+                  <ReactionButton 
+                    onClick={(e: any) => { 
+                      e.stopPropagation(); 
+                      onManualSync(item.id); 
+                    }}
+                    isLoading={item.targets.some(t => t.status === 'syncing')}
+                    icon={RefreshCw}
+                    variant="ghost"
+                    className="p-2 border-cyan-500/20 text-cyan-400"
+                  />
                 </div>
               </div>
             </div>
@@ -423,6 +546,54 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate }: { it
         ))}
       </div>
     </div>
+  );
+};
+
+const LogItem: React.FC<{ log: Log }> = ({ log }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="group relative"
+    >
+      <div className="flex gap-3">
+        <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+        <span className={cn(
+          "font-bold uppercase tracking-tighter shrink-0",
+          log.level === 'error' ? 'text-red-400' : 'text-amber-400'
+        )}>{log.level}</span>
+        <div className="flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-slate-300 leading-relaxed">{log.ui_message}</p>
+            <button 
+              onClick={() => handleCopy(`${log.ui_message}\n\nTechnical Context:\n${log.technical_context}`)}
+              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-white/5 hover:bg-white/10 rounded border border-white/10"
+              title="Copy details"
+            >
+              {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+            </button>
+          </div>
+          <div className="mt-1 p-2 bg-black/40 rounded border border-white/5 hidden group-hover:block transition-all">
+            <p className="text-[10px] text-cyan-400/70 mb-1 font-black uppercase tracking-widest">Technical Context</p>
+            <code className="text-slate-500 break-all">{log.technical_context}</code>
+            {log.resolution && (
+              <div className="mt-2 pt-2 border-t border-white/5">
+                <p className="text-[10px] text-emerald-400/70 mb-1 font-black uppercase tracking-widest">Suggested Resolution</p>
+                <p className="text-slate-400 italic">{log.resolution}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 };
 
@@ -443,33 +614,7 @@ const LogViewer = ({ logs }: { logs: Log[] }) => {
       </div>
       <div className="p-4 space-y-3 font-mono text-[11px] max-h-[500px] overflow-y-auto">
         {logs.map((log, i) => (
-          <motion.div 
-            key={i}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="group"
-          >
-            <div className="flex gap-3">
-              <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-              <span className={cn(
-                "font-bold uppercase tracking-tighter shrink-0",
-                log.level === 'error' ? 'text-red-400' : 'text-amber-400'
-              )}>{log.level}</span>
-              <div className="flex-1">
-                <p className="text-slate-300 leading-relaxed">{log.ui_message}</p>
-                <div className="mt-1 p-2 bg-black/40 rounded border border-white/5 hidden group-hover:block transition-all">
-                  <p className="text-[10px] text-cyan-400/70 mb-1 font-black uppercase tracking-widest">Technical Context</p>
-                  <code className="text-slate-500 break-all">{log.technical_context}</code>
-                  {log.resolution && (
-                    <div className="mt-2 pt-2 border-t border-white/5">
-                      <p className="text-[10px] text-emerald-400/70 mb-1 font-black uppercase tracking-widest">Suggested Resolution</p>
-                      <p className="text-slate-400 italic">{log.resolution}</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </motion.div>
+          <LogItem key={i} log={log} />
         ))}
       </div>
     </div>
@@ -627,7 +772,7 @@ const SystemsPage = ({ stats, providersInfo, logs, providers }: { stats: SystemS
   );
 };
 
-const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem, onClose: () => void, onUpdate: () => void }) => {
+const SyncManagementModal = ({ item, onClose, onUpdate, addToast }: { item: SyncMatrixItem, onClose: () => void, onUpdate: () => void, addToast: any }) => {
   const [activeSubTab, setActiveSubTab] = useState<'history' | 'settings'>('history');
   const [entities, setEntities] = useState<string[]>(item.entities || ['code']);
   const [isUpdating, setIsSaving] = useState(false);
@@ -644,11 +789,14 @@ const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem
         body: JSON.stringify({ entities })
       });
       if (res.ok) {
+        addToast('Configuration Updated', `Mirror settings for ${item.source_repo} have been applied successfully.`, 'success');
         onUpdate();
         onClose();
+      } else {
+        addToast('Update Failed', 'Server rejected the configuration change.', 'error');
       }
     } catch (err) {
-      console.error("Failed to update sync settings", err);
+      addToast('System Error', 'Failed to communicate with the sync engine.', 'error');
     } finally {
       setIsSaving(false);
     }
@@ -669,7 +817,9 @@ const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem
         <div className="p-6 border-b border-white/5 flex items-center justify-between bg-white/5">
           <div>
             <h3 className="text-xl font-black text-white uppercase tracking-tighter">Mirror Management</h3>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">{item.source_repo} • {item.branch}</p>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
+              {item.source_repo} • <span className="text-magenta-400">{item.branch || 'main'}</span>
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <div className="flex bg-black/40 rounded-lg p-1 border border-white/5">
@@ -743,20 +893,21 @@ const SyncManagementModal = ({ item, onClose, onUpdate }: { item: SyncMatrixItem
 
         <div className="p-4 border-t border-white/5 bg-white/5 flex justify-end gap-3">
           {activeSubTab === 'settings' && (
-            <button
+            <ReactionButton
               onClick={handleSaveSettings}
               disabled={isUpdating}
-              className="px-8 py-2 bg-cyan-500 hover:bg-cyan-400 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all glow-cyan disabled:opacity-50"
+              isLoading={isUpdating}
+              variant="primary"
             >
               {isUpdating ? 'Saving...' : 'Apply Changes'}
-            </button>
+            </ReactionButton>
           )}
-          <button
+          <ReactionButton
             onClick={onClose}
-            className="px-6 py-2 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all"
+            variant="ghost"
           >
             Close Management
-          </button>
+          </ReactionButton>
         </div>
       </motion.div>
     </motion.div>
@@ -781,7 +932,7 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   return res;
 };
 
-const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary, syncMatrix }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void, syncMatrix: SyncMatrixItem[] }) => {
+const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary, syncMatrix, addToast }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void, syncMatrix: SyncMatrixItem[], addToast: any }) => {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
   const [repos, setRepos] = useState<Record<string, Repository[]>>({});
   const [repoPages, setRepoPages] = useState<Record<string, number>>({});
@@ -792,6 +943,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   const [selectedTargetProviders, setSelectedTargetProviders] = useState<Set<string>>(new Set());
   const [syncEntities, setSyncEntities] = useState<string[]>(["code"]);
   const [repoEntities, setRepoEntities] = useState<Record<string, string[]>>({});
+  const [repoBranches, setRepoBranches] = useState<Record<string, string>>({});
 
   const [isSaving, setIsSaving] = useState(false);
 
@@ -829,6 +981,10 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         : [...current, entity];
       return { ...prev, [repoId]: updated };
     });
+  };
+
+  const updateRepoBranch = (repoId: string, branch: string) => {
+    setRepoBranches(prev => ({ ...prev, [repoId]: branch }));
   };
 
   const sourceProvider = providers.find(p => p.isSource);
@@ -944,11 +1100,11 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
   const saveSelection = async () => {
     if (selectedRepos.size === 0) {
-      alert("Please select at least one repository.");
+      addToast('Selection Required', 'Please select at least one repository to mirror.', 'warning');
       return;
     }
     if (selectedTargetProviders.size === 0) {
-      alert("Please select at least one target provider.");
+      addToast('Target Required', 'Please select at least one target mirror node.', 'warning');
       return;
     }
 
@@ -960,7 +1116,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
           const repo = repos[nsId].find(r => r.id === id);
           if (repo) return repo;
         }
-        return { id, name: `repo-${id}`, description: "Automated mirror target" }; // Fallback
+        return { id, name: `repo-${id}`, description: "Automated mirror target", visibility: 'private' as const }; // Fallback
       });
 
       const res = await fetchWithAuth('/api/v1/source/selection', {
@@ -968,7 +1124,8 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         body: JSON.stringify({ 
           selectedRepos: selectedRepoObjects.map(r => ({
             ...r,
-            entities: repoEntities[r.id] || syncEntities
+            entities: repoEntities[r.id] || syncEntities,
+            branch: repoBranches[r.id] || 'main'
           })),
           targetProviderIds: Array.from(selectedTargetProviders),
           entities: syncEntities // Global default
@@ -990,62 +1147,97 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     setSelectedRepos(new Set());
   };
 
+  const sourceProviderObj = providers.find(p => p.isSource);
+  const targetProviders = providers.filter(p => !p.isSource);
+
   return (
     <div className="space-y-8">
-      {/* Target Selection Section */}
-      <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
-            <RefreshCw className="w-6 h-6 text-cyan-400" />
+      {/* Node Role Configuration */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Source Node Info - Reference Only */}
+        <div className="col-span-1 glass-card p-6 border-magenta-500/20 bg-magenta-500/5 relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-2 opacity-10">
+            <Box className="w-16 h-16 text-magenta-400" />
           </div>
-          <div>
-            <h3 className="text-xl font-black text-white uppercase tracking-tighter">Target Mirror Nodes</h3>
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Select providers where repositories will be automatically provisioned and mirrored.</p>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-8 h-8 bg-magenta-500/20 rounded-lg flex items-center justify-center">
+              <Box className="w-5 h-5 text-magenta-400" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-white uppercase tracking-tighter">Source Node</h3>
+              <p className="text-[8px] font-bold text-slate-500 uppercase tracking-widest mt-0.5">Primary repository origin</p>
+            </div>
           </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {providers.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => toggleTargetProvider(p.id)}
-              className={cn(
-                "p-4 rounded-2xl border transition-all flex items-center gap-4 group",
-                selectedTargetProviders.has(p.id) 
-                  ? "bg-cyan-500/10 border-cyan-500/40 shadow-[0_0_20px_rgba(0,243,255,0.1)]" 
-                  : "bg-white/5 border-white/5 hover:border-white/20"
-              )}
-            >
-              <div className={cn(
-                "p-2 rounded-lg transition-colors",
-                selectedTargetProviders.has(p.id) ? "bg-cyan-500/20 text-cyan-400" : "bg-white/5 text-slate-500"
-              )}>
-                {p.type === 'github' ? <Github className="w-5 h-5" /> : <Gitlab className="w-5 h-5" />}
+          
+          {sourceProviderObj ? (
+            <div className="flex items-center gap-4 p-3 rounded-xl bg-white/5 border border-white/5">
+              <div className="p-2 bg-magenta-500/20 rounded-lg">
+                {sourceProviderObj.type === 'github' ? <Github className="w-5 h-5 text-magenta-400" /> : <Gitlab className="w-5 h-5 text-magenta-400" />}
               </div>
               <div className="text-left">
-                <div className="flex items-center gap-2">
+                <p className="text-xs font-black text-white uppercase tracking-widest">{sourceProviderObj.name}</p>
+                <p className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter mt-0.5">{sourceProviderObj.type}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-[9px] text-red-400 font-bold uppercase tracking-widest text-center">
+              No source provider configured
+            </div>
+          )}
+        </div>
+
+        {/* Target Mirror Selection */}
+        <div className="col-span-3 glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+              <RefreshCw className="w-6 h-6 text-cyan-400" />
+            </div>
+            <div>
+              <h3 className="text-xl font-black text-white uppercase tracking-tighter">Target Mirror Nodes</h3>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Select providers where repositories will be automatically provisioned and mirrored.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {targetProviders.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => toggleTargetProvider(p.id)}
+                className={cn(
+                  "p-4 rounded-2xl border transition-all flex items-center gap-4 group",
+                  selectedTargetProviders.has(p.id) 
+                    ? "bg-cyan-500/10 border-cyan-500/40 shadow-[0_0_20px_rgba(0,243,255,0.1)]" 
+                    : "bg-white/5 border-white/5 hover:border-white/20"
+                )}
+              >
+                <div className={cn(
+                  "p-2 rounded-lg transition-colors",
+                  selectedTargetProviders.has(p.id) ? "bg-cyan-500/20 text-cyan-400" : "bg-white/5 text-slate-500"
+                )}>
+                  {p.type === 'github' ? <Github className="w-5 h-5" /> : <Gitlab className="w-5 h-5" />}
+                </div>
+                <div className="text-left">
                   <p className={cn(
                     "text-xs font-black uppercase tracking-widest",
                     selectedTargetProviders.has(p.id) ? "text-white" : "text-slate-500"
                   )}>{p.name}</p>
-                  <span className={cn(
-                    "text-[7px] font-black px-1 py-0.5 rounded uppercase tracking-tighter",
-                    p.isSource ? "bg-magenta-500/20 text-magenta-400" : "bg-cyan-500/20 text-cyan-400"
-                  )}>
-                    {p.isSource ? "Source" : "Target"}
-                  </span>
+                  <p className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter mt-0.5">{p.type}</p>
                 </div>
-                <p className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter mt-0.5">{p.type}</p>
+                <div className="ml-auto">
+                  {selectedTargetProviders.has(p.id) ? (
+                    <CheckCircle2 className="w-4 h-4 text-cyan-400" />
+                  ) : (
+                    <Circle className="w-4 h-4 text-slate-800" />
+                  )}
+                </div>
+              </button>
+            ))}
+            {targetProviders.length === 0 && (
+              <div className="col-span-full py-8 text-center bg-black/20 rounded-2xl border border-dashed border-white/5">
+                <p className="text-[10px] font-black text-slate-600 uppercase tracking-[0.2em]">No target adapters available</p>
               </div>
-              <div className="ml-auto">
-                {selectedTargetProviders.has(p.id) ? (
-                  <CheckCircle2 className="w-4 h-4 text-cyan-400" />
-                ) : (
-                  <Circle className="w-4 h-4 text-slate-800" />
-                )}
-              </div>
-            </button>
-          ))}
+            )}
+          </div>
         </div>
       </div>
 
@@ -1057,7 +1249,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
           <div>
             <h3 className="text-xl font-black text-white uppercase tracking-tighter">Source Selection</h3>
             <div className="flex gap-2 mt-1">
-              {['code', 'issues', 'milestones', 'wiki', 'releases'].map(entity => (
+              {['code', 'issues', 'milestones', 'wiki', 'releases', 'snippets'].map(entity => (
                 <button
                   key={entity}
                   onClick={() => toggleEntity(entity)}
@@ -1077,33 +1269,38 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             {sourceProvider && (
-              <button 
+              <ReactionButton 
                 onClick={onRefresh}
-                className="px-4 py-2 bg-white/5 text-cyan-400 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/10 transition-all border border-cyan-500/20 flex items-center gap-2"
+                isLoading={isLoadingRepos[namespaces[0]?.id]} // Or a general isRefreshing state
+                icon={RefreshCw}
+                variant="ghost"
+                className="text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/10"
               >
-                <RefreshCw className="w-3 h-3" />
                 Refresh Repos
-              </button>
+              </ReactionButton>
             )}
-            <button 
+            <ReactionButton 
               onClick={saveSelection}
-              disabled={isSaving || !sourceProvider}
-              className="px-6 py-2 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-cyan-400 transition-all glow-cyan disabled:opacity-50"
+              disabled={!sourceProvider}
+              isLoading={isSaving}
+              variant="primary"
+              className="px-6"
             >
               {isSaving ? 'Provisioning...' : 'Initiate Mirroring'}
-            </button>
-            <button 
+            </ReactionButton>
+            <ReactionButton 
               onClick={selectAll}
-              className="text-[9px] font-black text-cyan-400 uppercase tracking-widest hover:text-white transition-colors border border-cyan-500/20 px-3 py-2 rounded-lg"
+              variant="ghost"
+              className="text-cyan-400 border-cyan-500/20"
             >
               Select All
-            </button>
-            <button 
+            </ReactionButton>
+            <ReactionButton 
               onClick={deselectAll}
-              className="text-[9px] font-black text-slate-500 uppercase tracking-widest hover:text-white transition-colors border border-white/5 px-3 py-2 rounded-lg"
+              variant="ghost"
             >
               Deselect All
-            </button>
+            </ReactionButton>
           </div>
         </div>
       </div>
@@ -1151,59 +1348,84 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                   <div className="p-4 space-y-2">
                     {repos[ns.id]?.map((repo) => {
                       const isSynced = syncMatrix.some(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`);
+                      const isSelected = selectedRepos.has(repo.id) || isSynced;
+                      
                       return (
                         <div 
                           key={repo.id} 
                           className={cn(
-                            "flex items-center justify-between p-3 rounded-lg transition-colors group",
-                            isSynced ? "opacity-60 cursor-not-allowed bg-white/2" : "hover:bg-white/5 cursor-pointer"
+                            "flex items-center justify-between p-3 rounded-lg transition-colors group cursor-pointer",
+                            isSelected ? "bg-white/5 border border-white/5" : "hover:bg-white/5 border border-transparent"
                           )}
-                          onClick={() => !isSynced && handleRepoCheck(ns.id, repo.id)}
+                          onClick={() => handleRepoCheck(ns.id, repo.id)}
                         >
                           <div className="flex items-center gap-3">
-                            <button className={cn("p-1", isSynced && "cursor-not-allowed")}>
-                              {selectedRepos.has(repo.id) || isSynced ? (
-                                <CheckCircle2 className={cn("w-4 h-4", isSynced ? "text-slate-600" : "text-cyan-400")} />
+                            <div className="p-1">
+                              {isSelected ? (
+                                <CheckCircle2 className="w-4 h-4 text-cyan-400 glow-cyan" />
                               ) : (
                                 <Circle className="w-4 h-4 text-slate-700" />
                               )}
-                            </button>
+                            </div>
                             <div>
                               <div className="flex items-center gap-2">
-                                <p className={cn("text-sm font-bold transition-colors", isSynced ? "text-slate-500" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
+                                <p className={cn("text-sm font-bold transition-colors", isSelected ? "text-white" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
+                                <span className={cn(
+                                  "text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter border",
+                                  repo.visibility === 'public' ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border-amber-500/20"
+                                )}>
+                                  {repo.visibility}
+                                </span>
                                 {isSynced && (
-                                  <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded uppercase tracking-widest border border-emerald-500/20">Synced</span>
+                                  <span className="text-[7px] font-black bg-cyan-500/10 text-cyan-400 px-1.5 py-0.5 rounded uppercase tracking-widest border border-cyan-500/20 shadow-[0_0_10px_rgba(0,243,255,0.1)]">Configured</span>
                                 )}
                               </div>
                               <div className="flex gap-2 items-center mt-1">
-                                {selectedRepos.has(repo.id) || isSynced ? (
-                                  <div className="flex gap-1">
-                                    {['code', 'issues', 'milestones', 'releases'].map(ent => (
-                                    <button
-                                      key={ent}
-                                      onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
-                                      className={cn(
-                                        "px-1.5 py-0.5 rounded-[4px] text-[7px] font-black uppercase tracking-tighter border transition-all",
-                                        (repoEntities[repo.id] || syncEntities).includes(ent)
-                                          ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
-                                          : "bg-white/5 border-white/10 text-slate-600 hover:border-white/20"
-                                      )}
-                                    >
-                                      {ent}
-                                    </button>
-                                  ))}
-                                </div>
-                              ) : (
-                                <p className="text-[10px] text-slate-600 font-medium">{repo.description}</p>
-                              )}
+                                {isSelected ? (
+                                  <div className="flex items-center gap-2">
+                                    <div className="flex gap-1">
+                                      {['code', 'issues', 'milestones', 'releases', 'snippets'].map(ent => (
+                                        <button
+                                          key={ent}
+                                          onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
+                                          className={cn(
+                                            "px-1.5 py-0.5 rounded-[4px] text-[7px] font-black uppercase tracking-tighter border transition-all",
+                                            (repoEntities[repo.id] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.entities : syncEntities) || []).includes(ent)
+                                              ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
+                                              : "bg-white/5 border-white/10 text-slate-600 hover:border-white/20"
+                                          )}
+                                        >
+                                          {ent}
+                                        </button>
+                                      ))}
+                                    </div>
+
+                                    <div className="flex items-center gap-1 ml-2 bg-black/20 px-2 py-0.5 rounded border border-white/5">
+                                      <Terminal className="w-2 h-2 text-slate-500" />
+                                      <input 
+                                        placeholder="branch"
+                                        className="bg-transparent border-none text-[8px] text-magenta-400 font-black uppercase tracking-widest focus:ring-0 w-16 p-0"
+                                        value={repoBranches[repo.id] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.branch : 'main') || 'main'}
+                                        onChange={(e) => updateRepoBranch(repo.id, e.target.value)}
+                                        onClick={(e) => e.stopPropagation()}
+                                      />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="text-[10px] text-slate-600 font-medium">{repo.description || 'No description provided'}</p>
+                                )}
+                              </div>
                             </div>
                           </div>
+                          <div className={cn(
+                            "text-[10px] font-black uppercase tracking-widest transition-opacity",
+                            isSelected ? "text-cyan-400 opacity-100" : "text-slate-700 opacity-0 group-hover:opacity-100"
+                          )}>
+                            {isSelected ? (isSynced ? "Mirror Configured" : "Mirror Active") : "Enable Mirror"}
+                          </div>
                         </div>
-                        <div className="text-[10px] font-black text-slate-700 uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
-                          Mirror Active
-                        </div>
-                      </div>
-                    );})}
+                      );
+                    })}
                     
                     {hasMoreRepos[ns.id] && (
                       <button 
@@ -1267,17 +1489,32 @@ function AppContent() {
   const [providerLatencies, setProviderLatencies] = useState<Record<string, { latency: string, status: string }>>({});
   const [namespaces, setNamespaces] = useState<Namespace[]>([]);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
+  const [newProviderType, setNewProviderType] = useState('github');
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [passwordReset, setPasswordReset] = useState({ current: '', new: '', confirm: '' });
   const [passwordResetStatus, setPasswordResetStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
+  const [isAppLoading, setIsAppLoading] = useState(true);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const addToast = (title: string, message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts(prev => [...prev, { id, title, message, type }]);
+    setTimeout(() => removeToast(id), 5000);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
 
   useEffect(() => {
     if (isAuthenticated) {
-      fetchData();
-      fetchSettings();
+      setIsAppLoading(true);
+      Promise.all([fetchData(), fetchSettings()]).finally(() => setIsAppLoading(false));
       const interval = setInterval(fetchData, 30000);
       return () => clearInterval(interval);
+    } else {
+      setIsAppLoading(false);
     }
   }, [isAuthenticated]);
 
@@ -1381,16 +1618,19 @@ function AppContent() {
       });
       if (res.ok) {
         setProviders(providers.filter(p => p.id !== id));
+        addToast('Node Decommissioned', 'The provider has been successfully removed from the network.', 'success');
+      } else {
+        addToast('Action Failed', 'The server could not decommission this node.', 'error');
       }
     } catch (err) {
-      console.error("Failed to delete provider", err);
+      addToast('System Error', 'Failed to communicate with the node management system.', 'error');
     }
   };
 
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (passwordReset.new !== passwordReset.confirm) {
-      setPasswordResetStatus({ type: 'error', message: 'New passwords do not match' });
+      addToast('Validation Error', 'New access keys do not match.', 'warning');
       return;
     }
     try {
@@ -1402,16 +1642,16 @@ function AppContent() {
         })
       });
       if (res.ok) {
-        setPasswordResetStatus({ type: 'success', message: 'Password updated successfully' });
+        addToast('Security Updated', 'Access key has been successfully rotated.', 'success');
         setPasswordReset({ current: '', new: '', confirm: '' });
         setIsDefaultPassword(false);
         localStorage.setItem('hydrozoa_is_default', 'false');
       } else {
         const data = await res.json();
-        setPasswordResetStatus({ type: 'error', message: data.error || 'Failed to update password' });
+        addToast('Update Failed', data.error || 'Invalid credentials.', 'error');
       }
     } catch (err) {
-      setPasswordResetStatus({ type: 'error', message: 'System communication error' });
+      addToast('System Error', 'Communication with the security layer failed.', 'error');
     }
   };
 
@@ -1466,14 +1706,27 @@ function AppContent() {
             {loginError && (
               <p className="text-red-400 text-[10px] font-black uppercase tracking-widest text-center">{loginError}</p>
             )}
-            <button 
+            <ReactionButton 
               type="submit" 
-              className="w-full py-4 bg-cyan-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:bg-cyan-400 transition-all glow-cyan active:scale-95"
+              className="w-full py-4 text-xs"
             >
               Initialize Session
-            </button>
+            </ReactionButton>
           </form>
         </motion.div>
+      </div>
+    );
+  }
+
+  if (isAppLoading) {
+    return (
+      <div className="h-screen w-screen bg-[#0a0f1a] flex items-center justify-center relative overflow-hidden">
+        <SyncTentacles />
+        <div className="glass-card p-8 flex flex-col items-center border-white/10 z-10">
+          <HydrozoaLogo className="w-16 h-16 animate-pulse mb-4" />
+          <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-[10px] font-black text-cyan-400 uppercase tracking-[0.2em] animate-pulse">Initializing Interface...</p>
+        </div>
       </div>
     );
   }
@@ -1489,6 +1742,7 @@ function AppContent() {
           ...p,
           isSource: p.id === id
         })));
+        addToast('Source Node Updated', 'Primary adapter has been reconfigured.', 'success');
         // Refresh namespaces if we are on the source tab
         if (activeTab === 'source') {
           fetchWithAuth('/api/v1/source/namespaces')
@@ -1497,11 +1751,12 @@ function AppContent() {
         }
       }
     } catch (err) {
-      console.error("Failed to set source", err);
+      addToast('Error', 'Failed to update source provider.', 'error');
     }
   };
 
   const handleManualSync = async (id: string) => {
+    const item = syncMatrix.find(s => s.id === id);
     try {
       const res = await fetchWithAuth(`/api/v1/sync/manual/${id}`, {
         method: 'POST'
@@ -1509,9 +1764,10 @@ function AppContent() {
       if (res.ok) {
         const data = await res.json();
         setSyncMatrix(syncMatrix.map(s => s.id === id ? data.item : s));
+        addToast('Sync Initiated', `Manual mirror started for ${item?.source_repo}`, 'info');
       }
     } catch (err) {
-      console.error("Failed to trigger manual sync", err);
+      addToast('Sync Failed', 'Could not trigger manual synchronization.', 'error');
     }
   };
 
@@ -1525,9 +1781,10 @@ function AppContent() {
         const nsRes = await fetchWithAuth('/api/v1/source/namespaces');
         const nsData = await nsRes.json();
         setNamespaces(nsData);
+        addToast('Discovery Complete', 'Repository cache has been refreshed from source.', 'success');
       }
     } catch (err) {
-      console.error("Failed to refresh repos", err);
+      addToast('Discovery Error', 'Failed to communicate with source provider.', 'error');
     }
   };
 
@@ -1545,22 +1802,29 @@ function AppContent() {
         const newProvider = await res.json();
         setProviders([...providers, newProvider]);
         setIsAddingProvider(false);
+        addToast('Node Registered', `Successfully connected ${newProvider.name} to the network.`, 'success');
+      } else {
+        addToast('Registration Failed', 'Server rejected the provider credentials.', 'error');
       }
     } catch (err) {
-      console.error("Failed to add provider", err);
+      addToast('System Error', 'Could not register new node.', 'error');
     }
   };
 
   const handleReplay = async (id: string) => {
+    const item = dlqItems.find(i => i.id === id);
     try {
       const res = await fetchWithAuth(`/api/v1/system/dlq/${id}/replay`, { 
         method: 'POST'
       });
       if (res.ok) {
         setDlqItems(dlqItems.filter(item => item.id !== id));
+        addToast('Replay Initiated', `Retrying failed mirror for ${item?.repository_id}`, 'success');
+      } else {
+        addToast('Replay Failed', 'The server could not restart this operation.', 'error');
       }
     } catch (err) {
-      console.error("Failed to replay", err);
+      addToast('Error', 'Failed to communicate with DLQ service.', 'error');
     }
   };
 
@@ -1742,12 +2006,12 @@ function AppContent() {
                   <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">Your account is using the default access key. Please update it in settings immediately.</p>
                 </div>
               </div>
-              <button 
+              <ReactionButton 
                 onClick={() => setActiveTab('settings')}
-                className="px-6 py-2 bg-amber-500 text-black text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-amber-400 transition-all"
+                className="px-6 py-2 bg-amber-500 text-black hover:bg-amber-400"
               >
                 Update Key
-              </button>
+              </ReactionButton>
             </motion.div>
           )}
         </AnimatePresence>
@@ -1758,20 +2022,18 @@ function AppContent() {
             <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[10px] mt-1">Multipoint Mirror Agent</p>
           </div>
           <div className="flex items-center gap-4 w-full md:w-auto">
-            <button 
+            <ReactionButton 
               onClick={fetchData}
-              className="p-3 glass-card hover:bg-cyan-500/10 transition-all hover:scale-110 active:scale-95 group border-cyan-500/20"
-              title="Refresh Telemetry"
-            >
-              <RefreshCw className="w-5 h-5 text-cyan-400" />
-            </button>
-            <button 
+              variant="ghost"
+              className="p-3 border-cyan-500/20 text-cyan-400"
+              icon={RefreshCw}
+            />
+            <ReactionButton 
               onClick={handleLogout}
-              className="p-3 glass-card hover:bg-red-500/10 transition-all hover:scale-110 active:scale-95 group border-red-500/20"
-              title="Logout"
-            >
-              <X className="w-5 h-5 text-red-400" />
-            </button>
+              variant="ghost"
+              className="p-3 border-red-500/20 text-red-400"
+              icon={X}
+            />
           </div>
         </header>
 
@@ -1858,6 +2120,98 @@ function AppContent() {
                   </div>
                 </div>
               </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+                        <Activity className="w-6 h-6 text-cyan-400" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-black text-white uppercase tracking-tighter">Sync Performance</h3>
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Duration of latest mirroring operations</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="h-[250px]">
+                    <Chart
+                      options={{
+                        chart: { type: 'bar', toolbar: { show: false }, background: 'transparent' },
+                        plotOptions: { bar: { borderRadius: 4, horizontal: true, barHeight: '40%' } },
+                        dataLabels: { enabled: false },
+                        grid: { borderColor: '#1e293b', strokeDashArray: 4 },
+                        xaxis: { 
+                          categories: syncMatrix.slice(0, 5).map(m => m.source_repo.split('/').pop()),
+                          labels: { style: { colors: '#64748b', fontSize: '10px', fontWeight: 800 } } 
+                        },
+                        yaxis: { labels: { style: { colors: '#94a3b8', fontSize: '10px', fontWeight: 800 } } },
+                        colors: ['#00f3ff'],
+                        theme: { mode: 'dark' }
+                      }}
+                      series={[{ 
+                        name: 'Duration (seconds)', 
+                        data: syncMatrix.slice(0, 5).map(m => parseInt(m.last_sync_duration?.replace('s', '') || '0')) 
+                      }]}
+                      type="bar"
+                      height="100%"
+                    />
+                  </div>
+                </div>
+
+                <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+                      <RefreshCw className="w-6 h-6 text-cyan-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-white uppercase tracking-tighter">Active Synchronizations</h3>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Real-time status of running operations</p>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4 max-h-[250px] overflow-y-auto pr-2 custom-scrollbar">
+                    {syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).length === 0 ? (
+                      <div className="py-8 text-center bg-black/20 rounded-2xl border border-dashed border-white/5">
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">No operations currently running</p>
+                      </div>
+                    ) : (
+                      syncMatrix.filter(m => m.targets.some(t => t.status === 'syncing')).map((item, idx) => (
+                        <div
+                          key={item.id}
+                          className="p-4 rounded-xl bg-white/5 border border-cyan-500/20 relative overflow-hidden group"
+                        >
+                          <div className="absolute top-0 right-0 w-16 h-16 blur-2xl -mr-8 -mt-8 bg-cyan-500/20 animate-pulse" />
+                          <div className="flex items-center justify-between mb-3 relative z-10">
+                            <p className="text-sm font-black text-white truncate max-w-[70%]">{item.source_repo}</p>
+                            <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-[8px] font-black uppercase tracking-widest rounded shadow-[0_0_10px_rgba(0,243,255,0.2)] animate-pulse">Syncing</span>
+                          </div>
+                          <div className="space-y-2 relative z-10">
+                            {item.targets.filter(t => t.status === 'syncing').map((target, tIdx) => {
+                              const p = providers.find(prov => prov.id === target.provider_id);
+                              return (
+                                <div key={tIdx} className="flex flex-col gap-1.5 p-2 bg-black/40 rounded-lg">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{p?.name || 'Unknown'}</span>
+                                    <span className="text-[9px] font-mono text-cyan-400">{target.progress || 0}%</span>
+                                  </div>
+                                  <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                                    <motion.div 
+                                      initial={{ width: 0 }}
+                                      animate={{ width: `${target.progress || 0}%` }}
+                                      className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,243,255,0.5)]"
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -1876,6 +2230,7 @@ function AppContent() {
                 setNamespaces={setNamespaces} 
                 setProvisioningSummary={setProvisioningSummary}
                 syncMatrix={syncMatrix}
+                addToast={addToast}
               />
 
             </motion.div>
@@ -1889,7 +2244,7 @@ function AppContent() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-6"
             >
-              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} onManualSync={handleManualSync} onUpdate={fetchData} />
+              <SyncMatrix items={syncMatrix} providers={providers} settings={settings} onManualSync={handleManualSync} onUpdate={fetchData} addToast={addToast} />
             </motion.div>
           )}
 
@@ -1903,13 +2258,13 @@ function AppContent() {
             >
               <div className="flex justify-between items-center">
                 <h3 className="text-xl font-black text-white uppercase tracking-tighter">Connected Adapters</h3>
-                <button 
+                <ReactionButton 
                   onClick={() => setIsAddingProvider(true)}
-                  className="flex items-center gap-2 px-6 py-2.5 bg-cyan-500 text-white text-xs font-black uppercase tracking-widest rounded-lg hover:bg-cyan-400 transition-all glow-cyan hover:scale-105 active:scale-95"
+                  icon={Plus}
+                  className="px-6"
                 >
-                  <Plus className="w-4 h-4" />
                   Add Provider
-                </button>
+                </ReactionButton>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -2112,19 +2467,24 @@ function AppContent() {
               </div>
               <div>
                 <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Adapter Type</label>
-                <select name="type" className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium cursor-pointer">
-                  <option value="github">GitHub</option>
-                  <option value="gitlab_self_hosted">GitLab (Self-Hosted)</option>
-                  <option value="gitea">Gitea</option>
-                  <option value="forgejo">Forgejo</option>
-                  <option value="gogs">Gogs</option>
-                  <option value="bitbucket">Bitbucket</option>
+                <select name="type" value={newProviderType} onChange={(e) => setNewProviderType(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium cursor-pointer">
+                  <option className="bg-slate-900 text-white" value="github">GitHub</option>
+                  <option className="bg-slate-900 text-white" value="gitlab">GitLab (Cloud)</option>
+                  <option className="bg-slate-900 text-white" value="gitlab_self_hosted">GitLab (Self-Hosted)</option>
+                  <option className="bg-slate-900 text-white" value="gitea">Gitea</option>
+                  <option className="bg-slate-900 text-white" value="forgejo">Forgejo</option>
+                  <option className="bg-slate-900 text-white" value="gogs">Gogs</option>
+                  <option className="bg-slate-900 text-white" value="bitbucket">Bitbucket</option>
                 </select>
               </div>
-              <div>
-                <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Base URL</label>
-                <input name="baseUrl" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="https://git.company.com" />
-              </div>
+              {['github', 'gitlab', 'bitbucket'].includes(newProviderType) ? (
+                <input type="hidden" name="baseUrl" value={newProviderType === 'github' ? 'https://github.com' : newProviderType === 'gitlab' ? 'https://gitlab.com' : 'https://bitbucket.org'} />
+              ) : (
+                <div>
+                  <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Base URL</label>
+                  <input name="baseUrl" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="https://git.company.com" />
+                </div>
+              )}
               <div>
                 <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Personal Access Token</label>
                 <input name="token" type="password" required className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium" placeholder="glpat-xxxxxxxxxxxxxxx" />
@@ -2379,8 +2739,8 @@ function AppContent() {
                         </div>
                         <p className="text-xs text-slate-500 leading-relaxed">Purging logs or resetting the sync matrix is irreversible. Proceed with extreme caution.</p>
                         <div className="flex gap-3">
-                          <button className="flex-1 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-red-500/20">Clear Logs</button>
-                          <button className="flex-1 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-red-500/20">Reset Matrix</button>
+                          <ReactionButton variant="danger" className="flex-1" onClick={() => addToast('Logs Cleared', 'System logs have been purged.', 'info')}>Clear Logs</ReactionButton>
+                          <ReactionButton variant="danger" className="flex-1" onClick={() => addToast('Matrix Reset', 'Synchronization matrix has been reinitialized.', 'warning')}>Reset Matrix</ReactionButton>
                         </div>
                       </div>
                     </div>
@@ -2442,39 +2802,43 @@ function AppContent() {
                         </div>
                       )}
 
-                      <button 
+                      <ReactionButton 
                         type="submit"
-                        className="w-full py-4 bg-white/5 hover:bg-white/10 text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-white/10"
+                        variant="ghost"
+                        className="w-full py-4"
                       >
                         Update Security Credentials
-                      </button>
+                      </ReactionButton>
                     </form>
                   </div>
                 </div>
               </div>
 
               <div className="flex justify-end">
-                <button 
+                <ReactionButton 
                   onClick={async () => {
                     const res = await fetchWithAuth('/api/v1/system/settings', {
                       method: 'POST',
                       body: JSON.stringify(settings)
                     });
                     if (res.ok) {
-                      alert("Configuration Synchronized Successfully");
+                      addToast('Configuration Synchronized', 'System settings have been updated and persisted.', 'success');
                     }
                   }}
-                  className="px-12 py-4 bg-gradient-to-r from-cyan-500 to-magenta-500 text-white text-xs font-black uppercase tracking-widest rounded-xl hover:scale-105 active:scale-95 transition-all glow-cyan"
+                  variant="primary"
+                  className="px-12 py-4 bg-gradient-to-r from-cyan-500 to-magenta-500 hover:scale-105 active:scale-95"
                 >
                   Save System Configuration
-                </button>
+                </ReactionButton>
               </div>
+
             </motion.div>
           )}
         </AnimatePresence>
       </main>
       </div>
       </div>
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );
 }
