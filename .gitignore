@@ -15,6 +15,10 @@ obj/
 .env.*.local
 !.env.example
 
+# source material
+CONTEXT-SOURCE/
+automator-devops/
+
 # Logs and temporary files
 *.log
 npm-debug.log*
