@@ -169,8 +169,21 @@ async function initDb() {
         log_retention_days INTEGER DEFAULT 7,
         max_concurrent_syncs INTEGER DEFAULT 5,
         bidirectional_sync BOOLEAN DEFAULT FALSE,
-        conflict_strategy TEXT DEFAULT 'source_wins'
+        conflict_strategy TEXT DEFAULT 'source_wins',
+        default_description TEXT DEFAULT 'Automated Mirror - {url}',
+        default_tags TEXT DEFAULT 'hydrozoa-mirror'
       );
+
+      -- Ensure new columns exist for backwards compatibility
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_settings' AND column_name='default_description') THEN
+          ALTER TABLE system_settings ADD COLUMN default_description TEXT DEFAULT 'Automated Mirror - {url}';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_settings' AND column_name='default_tags') THEN
+          ALTER TABLE system_settings ADD COLUMN default_tags TEXT DEFAULT 'hydrozoa-mirror';
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS api_metrics (
         id TEXT PRIMARY KEY,
@@ -364,14 +377,28 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   const type = provider.type.toLowerCase();
   const isPrivate = visibility === 'private';
   
-  // Append mirror link to description if available
-  let finalDescription = (description || "").replace(/[\x00-\x1F\x7F]/g, ' ');
-  if (sourceUrl) {
+  // Fetch system settings for defaults
+  const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
+  const settings = settingsRes.rows[0] || {};
+  const defaultDesc = settings.default_description || 'Automated Mirror - {url}';
+  const defaultTags = settings.default_tags || 'hydrozoa-mirror';
+  
+  let tags = defaultTags.split(',').map(t => t.trim()).filter(t => t);
+  
+  // Apply description logic: Use provided description if it exists, otherwise use default
+  let finalDescription = (description || "").replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+  if (!finalDescription && sourceUrl) {
+    finalDescription = defaultDesc.replace(/{url}/g, sourceUrl);
+  } else if (!finalDescription) {
+    finalDescription = defaultDesc.replace(/{url}/g, repoName);
+  } else if (sourceUrl) {
+    // If they had a description but we still want to ensure it has the mirror note:
     const mirrorNote = `\n\nManaged by Hydrozoa - Mirrored from: ${sourceUrl}`;
     if (!finalDescription.includes(mirrorNote)) {
       finalDescription += mirrorNote;
     }
   }
+
   let baseUrl = provider.url.replace(/\/$/, '');
   if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
     baseUrl = 'https://api.github.com';
@@ -484,7 +511,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
       createRes = await trackedFetch(provider.id, `${baseUrl}/api/v4/projects`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ name, path: name, visibility: visibility === 'internal' ? 'internal' : (isPrivate ? 'private' : 'public'), description: finalDescription })
+        body: JSON.stringify({ name, path: name, visibility: visibility === 'internal' ? 'internal' : (isPrivate ? 'private' : 'public'), description: finalDescription, topics: tags })
       });
     } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
       const currentUser = await getProviderUser(provider, token);
@@ -512,6 +539,29 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
         ui_message: `Provisioned repository: ${fullName}`,
         resolution: "Repository is now ready for mirroring."
       });
+
+      // Apply tags if configured
+      if (tags.length > 0) {
+        try {
+          if (type === 'github') {
+            await trackedFetch(provider.id, `${baseUrl}/repos/${fullName}/topics`, {
+              method: 'PUT',
+              headers: { ...headers, 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.mercy-preview+json' },
+              body: JSON.stringify({ names: tags })
+            });
+          } else if (['gitea', 'forgejo'].includes(type)) {
+            await trackedFetch(provider.id, `${baseUrl}/api/v1/repos/${fullName}/topics`, {
+              method: 'PUT',
+              headers: { ...headers, 'Authorization': `token ${token}` },
+              body: JSON.stringify({ topics: tags })
+            });
+          }
+          // GitLab handles topics in the creation payload
+        } catch (tagErr: any) {
+          sysLog.warn(`Failed to apply tags to ${fullName} on ${provider.name}: ${tagErr.message}`);
+        }
+      }
+
       return { status: 'created', message: `Repository ${fullName} created` };
     } else {
       const errText = createRes ? await createRes.text() : "Unknown error";
@@ -1407,19 +1457,26 @@ async function startServer() {
         const userData = await userRes.json();
         
         const orgsRes = await trackedFetch(sourceProvider.id, `${baseUrl}/user/orgs`, { headers });
-        if (!orgsRes.ok) {
-          const errText = await orgsRes.text();
-          sysLog.error(`GitHub Orgs API failed (${orgsRes.status}): ${errText}`);
-          // Don't fail entire request if only orgs fail
-        }
         const orgsData = await orgsRes.json();
         const safeOrgsData = Array.isArray(orgsData) ? orgsData : [];
         
-        sysLog.success(`Found user ${userData.login} and ${safeOrgsData.length} organizations`);
+        // Fetch full org details to get repo counts
+        const orgsWithCounts = await Promise.all(safeOrgsData.map(async (org: any) => {
+          try {
+            const detailRes = await trackedFetch(sourceProvider.id, `${baseUrl}/orgs/${org.login}`, { headers });
+            if (detailRes.ok) {
+              const detail = await detailRes.json();
+              return { id: org.login, name: org.login, type: 'organization', repo_count: (detail.public_repos || 0) + (detail.total_private_repos || 0) };
+            }
+          } catch (e) {}
+          return { id: org.login, name: org.login, type: 'organization', repo_count: 0 };
+        }));
+
+        sysLog.success(`Found user ${userData.login} and ${orgsWithCounts.length} organizations`);
 
         return res.json([
-          { id: userData.login, name: userData.login, type: 'user', repo_count: userData.public_repos + (userData.total_private_repos || 0) },
-          ...safeOrgsData.map((org: any) => ({ id: org.login, name: org.login, type: 'organization', repo_count: 0 }))
+          { id: userData.login, name: userData.login, type: 'user', repo_count: (userData.public_repos || 0) + (userData.total_private_repos || 0) },
+          ...orgsWithCounts
         ]);
       } 
       
@@ -1436,19 +1493,25 @@ async function startServer() {
 
         const userData = await userRes.json();
 
-        const groupsRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v4/groups`, { headers });
-        if (!groupsRes.ok) {
-          const errText = await groupsRes.text();
-          sysLog.error(`GitLab Groups API failed (${groupsRes.status}): ${errText}`);
-        }
+        // For GitLab user repo count, we might need another call or just set to 0 and let repos load
+        // But we can try to get projects count
+        const userProjectsRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v4/users/${userData.id}/projects?per_page=1`, { headers });
+        const userRepoCount = parseInt(userProjectsRes.headers.get('x-total') || '0');
+
+        const groupsRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v4/groups?statistics=true`, { headers });
         const groupsData = await groupsRes.json();
-        
         const safeGroupsData = Array.isArray(groupsData) ? groupsData : [];
+        
         sysLog.success(`Found user ${userData.username} and ${safeGroupsData.length} groups`);
 
         return res.json([
-          { id: `user-${userData.id}`, name: userData.username, type: 'user', repo_count: 0 },
-          ...safeGroupsData.map((group: any) => ({ id: `group-${group.id}`, name: group.full_path, type: 'group', repo_count: 0 }))
+          { id: `user-${userData.id}`, name: userData.username, type: 'user', repo_count: userRepoCount },
+          ...safeGroupsData.map((group: any) => ({ 
+            id: `group-${group.id}`, 
+            name: group.full_path, 
+            type: 'group', 
+            repo_count: group.statistics?.project_count || 0 
+          }))
         ]);
       }
 
@@ -1517,6 +1580,7 @@ async function startServer() {
     const { id } = req.params;
     const page = parseInt(req.query.page as string) || 1;
     const perPage = parseInt(req.query.per_page as string) || 100;
+    const nsType = req.query.type as string;
     
     const result = await pool.query('SELECT * FROM providers WHERE is_source = true');
     const sourceProvider = result.rows[0];
@@ -1536,7 +1600,12 @@ async function startServer() {
       
       if (sourceProvider.type === 'github') {
         headers['Authorization'] = `token ${token}`;
-        const url = `${baseUrl}/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=${perPage}&page=${page}`;
+        let url;
+        if (nsType === 'user') {
+          url = `${baseUrl}/user/repos?affiliation=owner&per_page=${perPage}&page=${page}`;
+        } else {
+          url = `${baseUrl}/orgs/${id}/repos?per_page=${perPage}&page=${page}`;
+        }
         sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
 
         const reposRes = await trackedFetch(sourceProvider.id, url, { headers });
@@ -1553,7 +1622,7 @@ async function startServer() {
 
         return res.json(safeReposData.map((repo: any) => ({
           id: repo.id.toString(),
-          name: repo.name,
+          name: repo.full_name,
           description: repo.description,
           web_url: repo.html_url,
           visibility: repo.private ? 'private' : 'public'
@@ -1562,9 +1631,12 @@ async function startServer() {
 
       if (sourceProvider.type.includes('gitlab')) {
         headers['Private-Token'] = token;
-        const url = id.startsWith('group-') 
-          ? `${baseUrl}/api/v4/groups/${id.replace('group-', '')}/projects?per_page=${perPage}&page=${page}`
-          : `${baseUrl}/api/v4/projects?owned=true&per_page=${perPage}&page=${page}`;
+        let url;
+        if (nsType === 'user' || !id.startsWith('group-')) {
+          url = `${baseUrl}/api/v4/projects?owned=true&per_page=${perPage}&page=${page}`;
+        } else {
+          url = `${baseUrl}/api/v4/groups/${id.replace('group-', '')}/projects?per_page=${perPage}&page=${page}`;
+        }
         
         sysLog.info(`Fetching GitLab projects for ${id} from ${url}`);
 
@@ -1575,7 +1647,12 @@ async function startServer() {
           const hydrozoaStatus = [401, 403].includes(reposRes.status) ? 502 : reposRes.status;
           return res.status(hydrozoaStatus).json({ error: "GitLab Projects API failed", detail: errText });
         }
-        const reposData = await reposRes.json();
+        let reposData = await reposRes.json();
+        
+        if (nsType === 'user' && Array.isArray(reposData)) {
+          reposData = reposData.filter((project: any) => project.namespace && project.namespace.kind === 'user');
+        }
+
         const safeReposData = Array.isArray(reposData) ? reposData : [];
         
         sysLog.success(`Found ${safeReposData.length} projects for GitLab namespace ${id}`);
@@ -1590,13 +1667,19 @@ async function startServer() {
       }
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
-        // We try organization repos first, then fall back to user repos if needed
-        let url = `${baseUrl}/api/v1/orgs/${id}/repos?limit=${perPage}&page=${page}`;
+        let url;
+        if (nsType === 'user') {
+          // Fetch repos owned by the specific user (could be the authenticated user)
+          url = `${baseUrl}/api/v1/users/${id}/repos?limit=${perPage}&page=${page}`;
+        } else {
+          url = `${baseUrl}/api/v1/orgs/${id}/repos?limit=${perPage}&page=${page}`;
+        }
+        
         sysLog.info(`Fetching ${sourceProvider.type} repos for ${id} from ${url}`);
         let reposRes = await trackedFetch(sourceProvider.id, url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         
-        if (!reposRes.ok) {
-          // Fallback to user repos if org repos fail
+        if (!reposRes.ok && nsType === 'user') {
+          // Fallback to /user/repos if /users/{username}/repos fails
           url = `${baseUrl}/api/v1/user/repos?limit=${perPage}&page=${page}`;
           sysLog.info(`Falling back to ${sourceProvider.type} user repos for ${id} from ${url}`);
           reposRes = await trackedFetch(sourceProvider.id, url, { headers: { ...headers, 'Authorization': `token ${token}` } });
@@ -1609,7 +1692,13 @@ async function startServer() {
           return res.status(hydrozoaStatus).json({ error: "Provider Repos API failed", detail: errText });
         }
 
-        const reposData = await reposRes.json();
+        let reposData = await reposRes.json();
+        
+        // Ensure we only get personal repos if nsType is user and we fell back to /user/repos
+        if (nsType === 'user' && Array.isArray(reposData)) {
+          reposData = reposData.filter((repo: any) => repo.owner && repo.owner.login === id);
+        }
+
         const safeReposData = Array.isArray(reposData) ? reposData : [];
         sysLog.success(`Found ${safeReposData.length} repos for ${sourceProvider.type} namespace ${id}`);
         return res.json(safeReposData.map((repo: any) => ({ 
@@ -2163,7 +2252,7 @@ async function startServer() {
   });
 
   app.post("/api/v1/system/settings", authenticateToken, async (req, res) => {
-    const { sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy } = req.body;
+    const { sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy, default_description, default_tags } = req.body;
     try {
       await pool.query(
         `UPDATE system_settings SET 
@@ -2171,9 +2260,11 @@ async function startServer() {
           log_retention_days = $2, 
           max_concurrent_syncs = $3, 
           bidirectional_sync = $4, 
-          conflict_strategy = $5 
+          conflict_strategy = $5,
+          default_description = $6,
+          default_tags = $7
         WHERE id = 1`,
-        [sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy]
+        [sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy, default_description, default_tags]
       );
       
       await addLog({
