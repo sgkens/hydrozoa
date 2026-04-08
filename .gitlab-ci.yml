@@ -10,9 +10,9 @@ variables:
   # Global variables
 
 # 1. Versioning Stage
+# Host already has PowerShell installed
 generate_version:
   stage: version
-  image: mcr.microsoft.com/powershell:lts-debian-12
   tags:
     - linux-shell
   script:
@@ -27,7 +27,6 @@ generate_version:
 # 2. Frontend Build Stage
 build_frontend:
   stage: build
-  image: node:20-bookworm
   tags:
     - linux-shell
   script:
@@ -41,7 +40,6 @@ build_frontend:
 # 3. Lint/Test Stage
 lint_code:
   stage: lint
-  image: node:20-bookworm
   tags:
     - linux-shell
   script:
@@ -49,9 +47,9 @@ lint_code:
     - npm run lint
 
 # 4. Docker Build Stage
+# Host already has Docker and Git installed
 build_image:
   stage: docker-build
-  image: node:20-bookworm
   tags:
     - linux-shell
   needs:
@@ -79,7 +77,6 @@ build_image:
 # 5. Docker Push Stage
 push_image:
   stage: docker-push
-  image: node:20-bookworm
   tags:
     - linux-shell
   needs:
@@ -101,7 +98,6 @@ push_image:
 # 6. GitLab Release Stage
 create_release:
   stage: release
-  image: node:20-bookworm
   tags:
     - linux-shell
   needs:
@@ -109,13 +105,6 @@ create_release:
       artifacts: true
     - job: build_frontend
       artifacts: true
-  before_script:
-    - apt-get update && apt-get install -y zip curl
-    - |
-      if ! command -v release-cli &> /dev/null; then
-        curl --location --output /usr/local/bin/release-cli "https://gitlab.com/api/v4/projects/gitlab-org%2Frelease-cli/packages/binaries/latest/release-cli-linux-amd64"
-        chmod +x /usr/local/bin/release-cli
-      fi
   script:
     - echo "Creating release for version $BUILD_VERSION"
     - PACKAGE_NAME="hydrozoa"
