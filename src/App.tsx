@@ -433,6 +433,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
                            {ent === 'milestones' && <Flag className="w-1.5 h-1.5 text-cyan-400" />}
                            {ent === 'releases' && <Tag className="w-1.5 h-1.5 text-cyan-400" />}
                            {ent === 'wiki' && <Book className="w-1.5 h-1.5 text-cyan-400" />}
+                           {ent === 'snippets' && <Layers className="w-1.5 h-1.5 text-cyan-400" />}
                          </div>
                        ))}
                      </div>
@@ -933,7 +934,27 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   return res;
 };
 
-const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setProvisioningSummary, syncMatrix, addToast }: { providers: Provider[], onRefresh: () => void, namespaces: Namespace[], setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, setProvisioningSummary: (summary: any[] | null) => void, syncMatrix: SyncMatrixItem[], addToast: any }) => {
+const SourceSelection = ({ 
+  providers, 
+  onRefresh, 
+  namespaces, 
+  setNamespaces, 
+  setProvisioningSummary, 
+  syncMatrix, 
+  addToast,
+  isRefreshing,
+  isSaving: isSavingGlobal
+}: { 
+  providers: Provider[], 
+  onRefresh: () => void, 
+  namespaces: Namespace[], 
+  setNamespaces: React.Dispatch<React.SetStateAction<Namespace[]>>, 
+  setProvisioningSummary: (summary: any[] | null) => void, 
+  syncMatrix: SyncMatrixItem[], 
+  addToast: any,
+  isRefreshing: boolean,
+  isSaving: boolean
+}) => {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
   const [repos, setRepos] = useState<Record<string, Repository[]>>({});
   const [repoPages, setRepoPages] = useState<Record<string, number>>({});
@@ -1570,6 +1591,8 @@ function AppContent() {
   const [passwordResetStatus, setPasswordResetStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
   const [isAppLoading, setIsAppLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSavingSelection, setIsSavingSelection] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const addToast = (title: string, message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
@@ -1848,6 +1871,7 @@ function AppContent() {
   };
 
   const handleRefreshRepos = async () => {
+    setIsRefreshing(true);
     try {
       const res = await fetchWithAuth('/api/v1/source/refresh', {
         method: 'POST'
@@ -1861,6 +1885,8 @@ function AppContent() {
       }
     } catch (err) {
       addToast('Discovery Error', 'Failed to communicate with source provider.', 'error');
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -2153,6 +2179,73 @@ function AppContent() {
                 />
               </div>
 
+              {/* Running Systems Overview */}
+              <div className="glass-card p-6 border-cyan-500/10 bg-cyan-500/5">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center">
+                      <Layers className="w-6 h-6 text-cyan-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-white uppercase tracking-tighter">Mirror Status Overview</h3>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Real-time status of configured mirroring pipelines</p>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {syncMatrix.slice(0, 6).map((item, i) => {
+                    const isActive = item.targets?.some((t: any) => t.status === 'syncing');
+                    return (
+                      <div key={item.id} className={cn(
+                        "p-4 rounded-2xl border transition-all relative overflow-hidden",
+                        isActive ? "bg-cyan-500/10 border-cyan-500/30 shadow-[0_0_20px_rgba(0,243,255,0.05)]" : "bg-white/2 border-white/5"
+                      )}>
+                        <div className="flex justify-between items-start mb-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-black text-white truncate uppercase tracking-tighter">{item.source_repo.split('/').pop()}</p>
+                            <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">{item.branch || 'main'}</p>
+                          </div>
+                          {isActive && (
+                            <span className="flex items-center gap-1.5 px-2 py-0.5 bg-cyan-500/20 rounded-full border border-cyan-500/30">
+                              <div className="w-1 h-1 bg-cyan-400 rounded-full animate-ping" />
+                              <span className="text-[7px] font-black text-cyan-400 uppercase tracking-widest">Active</span>
+                            </span>
+                          )}
+                        </div>
+                        
+                        <div className="flex flex-wrap gap-1 mb-4">
+                          {(item.entities || ['code']).map(ent => (
+                            <span key={ent} className="px-1.5 py-0.5 bg-white/5 border border-white/10 rounded-[4px] text-[6px] font-black text-slate-400 uppercase tracking-widest">
+                              {ent}
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center text-[8px] font-bold uppercase tracking-widest">
+                            <span className="text-slate-500">Target Nodes</span>
+                            <span className="text-slate-400">{item.targets?.length || 0}</span>
+                          </div>
+                          <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                            <motion.div 
+                              className={cn("h-full", isActive ? "bg-cyan-500 shadow-[0_0_10px_rgba(0,243,255,0.5)]" : "bg-emerald-500/50")}
+                              initial={{ width: 0 }}
+                              animate={{ width: `${item.success_rate || 0}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {syncMatrix.length === 0 && (
+                    <div className="col-span-full py-12 text-center border border-dashed border-white/5 rounded-2xl">
+                      <p className="text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">Standby - Awaiting configuration</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                 <div className="md:col-span-2 glass-card p-6">
                   <div className="flex justify-between items-center mb-6">
@@ -2307,6 +2400,8 @@ function AppContent() {
                 setProvisioningSummary={setProvisioningSummary}
                 syncMatrix={syncMatrix}
                 addToast={addToast}
+                isRefreshing={isRefreshing}
+                isSaving={isSavingSelection}
               />
 
             </motion.div>

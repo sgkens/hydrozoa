@@ -386,16 +386,26 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   let tags = defaultTags.split(',').map(t => t.trim()).filter(t => t);
   
   // Apply description logic: Use provided description if it exists, otherwise use default
-  let finalDescription = (description || "").replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+  // GitHub API strictly forbids control characters (\n, \r, \t, etc.) in the description field.
+  const sanitizeDescription = (str: string) => {
+    return (str || "")
+      .replace(/[\x00-\x1F\x7F-\x9F]/g, ' ') // Strip ASCII and Unicode control characters
+      .replace(/\s+/g, ' ')                  // Collapse multiple spaces/newlines into one space
+      .trim()
+      .substring(0, 255);                    // GitHub limit is 255 characters
+  };
+
+  let finalDescription = sanitizeDescription(description);
   if (!finalDescription && sourceUrl) {
-    finalDescription = defaultDesc.replace(/{url}/g, sourceUrl);
+    finalDescription = sanitizeDescription(defaultDesc.replace(/{url}/g, sourceUrl));
   } else if (!finalDescription) {
-    finalDescription = defaultDesc.replace(/{url}/g, repoName);
+    finalDescription = sanitizeDescription(defaultDesc.replace(/{url}/g, repoName));
   } else if (sourceUrl) {
     // If they had a description but we still want to ensure it has the mirror note:
-    const mirrorNote = `\n\nManaged by Hydrozoa - Mirrored from: ${sourceUrl}`;
-    if (!finalDescription.includes(mirrorNote)) {
-      finalDescription += mirrorNote;
+    const mirrorNote = ` [Mirrored from: ${sourceUrl}]`;
+    if (!finalDescription.includes("Mirrored from")) {
+      // Ensure we don't exceed 255 chars even with the note
+      finalDescription = sanitizeDescription(finalDescription.substring(0, 255 - mirrorNote.length) + mirrorNote);
     }
   }
 
