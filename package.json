@@ -3,6 +3,13 @@
   "private": true,
   "version": "1.2.2",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/sgkens/hydrozoa.git"
+  },
+  "bugs": {
+    "url": "https://gitlab.com/sgkens/hydrozoa/-/issues"
+  },
   "scripts": {
     "dev": "bun run server.ts",
     "build": "vite build",
