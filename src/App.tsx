@@ -399,7 +399,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: idx * 0.1 }}
             onClick={() => setSelectedItem(item)}
-            className="glass-card p-4 md:p-6 group hover:border-cyan-500/30 transition-all relative overflow-hidden cursor-pointer"
+            className="glass-card p-2 md:p-3 group hover:border-cyan-500/30 transition-all relative overflow-hidden cursor-pointer"
           >
             {/* Background Sync Animation */}
             <div className="absolute inset-0 pointer-events-none opacity-5">
@@ -416,30 +416,30 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
               </svg>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-6 gap-4 items-center relative z-10">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-2 items-center relative z-10">
               <div className="col-span-1">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center border border-white/10 group-hover:border-cyan-500/30 transition-colors">
-                    <Github className="w-5 h-5 text-slate-400 group-hover:text-cyan-400 transition-colors" />
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-white/5 rounded-lg flex items-center justify-center border border-white/10 group-hover:border-cyan-500/30 transition-colors">
+                    <Github className="w-4 h-4 text-slate-400 group-hover:text-cyan-400 transition-colors" />
                   </div>
-                  <div>
-                   <span className="text-white font-black tracking-tight block">{item.source_repo}</span>
-                   <div className="flex items-center gap-2 mt-1">
-                     <div className="flex gap-1 mr-2">
+                  <div className="min-w-0">
+                   <span className="text-white font-black tracking-tight block truncate text-xs">{item.source_repo}</span>
+                   <div className="flex items-center gap-1 mt-0.5">
+                     <div className="flex gap-0.5 mr-1">
                        {(item.entities || ['code']).map(ent => (
-                         <div key={ent} title={ent} className="w-3 h-3 rounded-[2px] bg-cyan-500/20 flex items-center justify-center">
-                           {ent === 'code' && <Terminal className="w-2 h-2 text-cyan-400" />}
-                           {ent === 'issues' && <AlertTriangle className="w-2 h-2 text-cyan-400" />}
-                           {ent === 'milestones' && <Flag className="w-2 h-2 text-cyan-400" />}
-                           {ent === 'releases' && <Tag className="w-2 h-2 text-cyan-400" />}
-                           {ent === 'wiki' && <Book className="w-2 h-2 text-cyan-400" />}
+                         <div key={ent} title={ent} className="w-2.5 h-2.5 rounded-[2px] bg-cyan-500/20 flex items-center justify-center">
+                           {ent === 'code' && <Terminal className="w-1.5 h-1.5 text-cyan-400" />}
+                           {ent === 'issues' && <AlertTriangle className="w-1.5 h-1.5 text-cyan-400" />}
+                           {ent === 'milestones' && <Flag className="w-1.5 h-1.5 text-cyan-400" />}
+                           {ent === 'releases' && <Tag className="w-1.5 h-1.5 text-cyan-400" />}
+                           {ent === 'wiki' && <Book className="w-1.5 h-1.5 text-cyan-400" />}
                          </div>
                        ))}
                      </div>
-                     <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Interval: {item.sync_interval}m</span>
+                     <span className="text-[7px] text-slate-500 font-bold uppercase tracking-widest">{item.sync_interval}m</span>
 
                       {settings.bidirectional_sync && (
-                        <span className="px-1.5 py-0.5 bg-cyan-500/10 text-cyan-400 text-[8px] font-black uppercase tracking-widest rounded border border-cyan-500/20">Bidirectional</span>
+                        <span className="px-1 py-0.5 bg-cyan-500/10 text-cyan-400 text-[6px] font-black uppercase tracking-widest rounded border border-cyan-500/20">Bidi</span>
                       )}
                     </div>
                   </div>
@@ -447,54 +447,54 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
               </div>
 
               <div className="col-span-1">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-[10px] font-black text-magenta-400 uppercase tracking-widest">
-                    <Terminal className="w-3 h-3" />
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1.5 text-[9px] font-black text-magenta-400 uppercase tracking-widest">
+                    <Terminal className="w-2.5 h-2.5" />
                     {item.branch || 'main'}
                   </div>
-                  <div className="text-[10px] font-mono text-slate-500">
+                  <div className="text-[8px] font-mono text-slate-500">
                     {item.last_commit || '0000000'}
                   </div>
                 </div>
               </div>
               <div className="col-span-1">
-                <div className="space-y-1">
-                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Duration: {item.last_sync_duration || 'N/A'}</div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                <div className="space-y-0.5">
+                  <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Dur: {item.last_sync_duration || 'N/A'}</div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex-1 h-0.5 bg-white/5 rounded-full overflow-hidden">
                       <motion.div 
                         initial={{ width: 0 }}
                         animate={{ width: `${item.success_rate || 0}%` }}
                         className="h-full bg-emerald-500"
                       />
                     </div>
-                    <span className="text-[9px] font-mono text-emerald-400">{item.success_rate}%</span>
+                    <span className="text-[8px] font-mono text-emerald-400">{item.success_rate}%</span>
                   </div>
                 </div>
               </div>
               
               <div className="col-span-1">
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                    <div className="w-1.5 h-1.5 bg-magenta-400 rounded-full glow-magenta" />
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                    <div className="w-1 h-1 bg-magenta-400 rounded-full glow-magenta" />
                     {getProvider(item.source_provider)?.name || 'Unknown'}
                   </div>
-                  <div className="flex items-center gap-1.5 ml-3.5">
-                    {getProvider(item.source_provider)?.type.includes('github') ? <Github className="w-2.5 h-2.5 text-slate-600" /> : <Gitlab className="w-2.5 h-2.5 text-slate-600" />}
-                    <span className="text-[8px] text-slate-600 font-bold uppercase tracking-tighter">{getProvider(item.source_provider)?.type}</span>
+                  <div className="flex items-center gap-1 ml-2.5">
+                    {getProvider(item.source_provider)?.type.includes('github') ? <Github className="w-2 h-2 text-slate-600" /> : <Gitlab className="w-2 h-2 text-slate-600" />}
+                    <span className="text-[7px] text-slate-600 font-bold uppercase tracking-tighter">{getProvider(item.source_provider)?.type}</span>
                   </div>
                 </div>
               </div>
 
               <div className="col-span-2">
-                <div className="flex flex-wrap gap-3 items-center">
+                <div className="flex flex-wrap gap-2 items-center">
                   {item.targets.map((target, tIdx) => {
                     const p = getProvider(target.provider_id);
                     return (
                       <div 
                         key={tIdx} 
                         className={cn(
-                          "flex flex-col gap-1 p-2 rounded-xl border transition-all min-w-[140px]",
+                          "flex flex-col gap-0.5 p-1.5 rounded-lg border transition-all min-w-[110px]",
                           target.status === 'synced' ? "bg-emerald-500/5 border-emerald-500/20" :
                           target.status === 'syncing' ? "bg-cyan-500/5 border-cyan-500/20 shadow-[0_0_15px_rgba(0,243,255,0.05)]" :
                           "bg-red-500/5 border-red-500/20"
@@ -502,18 +502,18 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
                       >
                         <div className="flex items-center justify-between">
                           <div className={cn(
-                            "flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest",
+                            "flex items-center gap-1 text-[8px] font-black uppercase tracking-widest",
                             target.status === 'synced' ? "text-emerald-400" :
                             target.status === 'syncing' ? "text-cyan-400" : "text-red-400"
                           )}>
-                            {p?.type === 'github' ? <Github className="w-3 h-3" /> : <Gitlab className="w-3 h-3" />}
+                            {p?.type === 'github' ? <Github className="w-2.5 h-2.5" /> : <Gitlab className="w-2.5 h-2.5" />}
                             {p?.name}
                           </div>
-                          <span className="text-[8px] text-slate-500 font-mono">{target.bytes_transferred || '0B'}</span>
+                          <span className="text-[7px] text-slate-500 font-mono">{target.bytes_transferred || '0B'}</span>
                         </div>
                         
                         {target.status === 'syncing' && (
-                          <div className="mt-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                          <div className="mt-0.5 h-0.5 bg-white/5 rounded-full overflow-hidden">
                             <motion.div 
                               initial={{ width: 0 }}
                               animate={{ width: `${target.progress || 0}%` }}
@@ -522,9 +522,9 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
                           </div>
                         )}
 
-                        <div className="flex items-center justify-between mt-1">
-                          <span className="text-[8px] text-slate-600 font-black uppercase tracking-tighter">{target.status}</span>
-                          <span className="text-[8px] text-slate-600">{new Date(target.last_sync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        <div className="flex items-center justify-between mt-0.5">
+                          <span className="text-[7px] text-slate-600 font-black uppercase tracking-tighter">{target.status}</span>
+                          <span className="text-[7px] text-slate-600">{new Date(target.last_sync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
                       </div>
                     );
@@ -537,7 +537,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
                     isLoading={item.targets.some(t => t.status === 'syncing')}
                     icon={RefreshCw}
                     variant="ghost"
-                    className="p-2 border-cyan-500/20 text-cyan-400"
+                    className="p-1.5 border-cyan-500/20 text-cyan-400"
                   />
                 </div>
               </div>
@@ -548,6 +548,7 @@ const SyncMatrix = ({ items, providers, settings, onManualSync, onUpdate, addToa
     </div>
   );
 };
+
 
 const LogItem: React.FC<{ log: Log }> = ({ log }) => {
   const [copied, setCopied] = useState(false);
@@ -949,23 +950,29 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
   // Initialize from syncMatrix
   useEffect(() => {
-    if (syncMatrix.length > 0) {
-      const repos = new Set<string>();
-      const targets = new Set<string>();
+    if (syncMatrix.length > 0 && selectedRepos.size === 0) {
+      const selectedRepoNames = new Set<string>();
+      const targetIds = new Set<string>();
+      const namespacesToSelect = new Set<string>();
       
       syncMatrix.forEach(item => {
-        // Find repo ID if we have it in our loaded repos
-        // This is tricky because we might not have loaded the namespace yet
-        // For now, we'll track by name if ID isn't available, but the system uses IDs
-        // However, the sync_matrix stores source_repo as name/path string
-        repos.add(item.source_repo);
-        item.targets.forEach(t => targets.add(t.provider_id));
+        selectedRepoNames.add(item.source_repo);
+        item.targets.forEach(t => targetIds.add(t.provider_id));
+        
+        // Try to find the namespace for this repo to auto-select it
+        // Note: 'repos' here refers to the state Record<string, Repository[]>
+        for (const nsId in repos) {
+          if (repos[nsId].some(r => r.name === item.source_repo || `${namespaces.find(n => n.id === nsId)?.name}/${r.name}` === item.source_repo)) {
+            namespacesToSelect.add(nsId);
+          }
+        }
       });
       
-      setSelectedRepos(repos);
-      setSelectedTargetProviders(targets);
+      setSelectedRepos(selectedRepoNames);
+      setSelectedTargetProviders(targetIds);
+      setSelectedNamespaces(namespacesToSelect);
     }
-  }, [syncMatrix]);
+  }, [syncMatrix, namespaces, repos]);
 
   const toggleEntity = (entity: string) => {
     setSyncEntities(prev => 
@@ -973,18 +980,18 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     );
   };
 
-  const toggleRepoEntity = (repoId: string, entity: string) => {
+  const toggleRepoEntity = (repoName: string, entity: string) => {
     setRepoEntities(prev => {
-      const current = prev[repoId] || syncEntities;
+      const current = prev[repoName] || syncEntities;
       const updated = current.includes(entity) 
         ? current.filter(e => e !== entity) 
         : [...current, entity];
-      return { ...prev, [repoId]: updated };
+      return { ...prev, [repoName]: updated };
     });
   };
 
-  const updateRepoBranch = (repoId: string, branch: string) => {
-    setRepoBranches(prev => ({ ...prev, [repoId]: branch }));
+  const updateRepoBranch = (repoName: string, branch: string) => {
+    setRepoBranches(prev => ({ ...prev, [repoName]: branch }));
   };
 
   const sourceProvider = providers.find(p => p.isSource);
@@ -999,10 +1006,11 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   }, [sourceProvider, namespaces.length]);
 
   const fetchReposPage = async (nsId: string, page: number) => {
+    const ns = namespaces.find(n => n.id === nsId);
     setIsLoadingRepos(prev => ({ ...prev, [nsId]: true }));
     try {
       const perPage = 50;
-      const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?page=${page}&per_page=${perPage}`);
+      const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?page=${page}&per_page=${perPage}&type=${ns?.type || ''}`);
       const data = await res.json();
       const newRepos = Array.isArray(data) ? data : [];
       
@@ -1038,17 +1046,18 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   const handleNamespaceCheck = async (nsId: string) => {
     const newSelectedNamespaces = new Set(selectedNamespaces);
     const newSelectedRepos = new Set(selectedRepos);
+    const ns = namespaces.find(n => n.id === nsId);
 
     if (selectedNamespaces.has(nsId)) {
       newSelectedNamespaces.delete(nsId);
       // Uncheck all repos in this namespace
-      const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos`)).json();
-      nsRepos.forEach((r: Repository) => newSelectedRepos.delete(r.id));
+      const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?type=${ns?.type || ''}`)).json();
+      nsRepos.forEach((r: Repository) => newSelectedRepos.delete(r.name));
     } else {
       newSelectedNamespaces.add(nsId);
       // Check all repos in this namespace
-      const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos`)).json();
-      nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.id));
+      const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?type=${ns?.type || ''}`)).json();
+      nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.name));
       if (!repos[nsId]) setRepos(prev => ({ ...prev, [nsId]: nsRepos }));
     }
 
@@ -1056,25 +1065,26 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     setSelectedRepos(newSelectedRepos);
   };
 
-  const handleRepoCheck = (nsId: string, repoId: string) => {
+  const handleRepoCheck = (nsId: string, repoName: string) => {
     const newSelectedRepos = new Set(selectedRepos);
-    if (newSelectedRepos.has(repoId)) {
-      newSelectedRepos.delete(repoId);
-      // If a repo is unchecked, the namespace is no longer "fully" selected
-      const newSelectedNamespaces = new Set(selectedNamespaces);
-      newSelectedNamespaces.delete(nsId);
-      setSelectedNamespaces(newSelectedNamespaces);
-    } else {
-      newSelectedRepos.add(repoId);
-      // Check if all repos in namespace are now selected
-      const nsRepos = repos[nsId];
-      if (nsRepos && nsRepos.every(r => newSelectedRepos.has(r.id))) {
-        const newSelectedNamespaces = new Set(selectedNamespaces);
-        newSelectedNamespaces.add(nsId);
-        setSelectedNamespaces(newSelectedNamespaces);
+    const newSelectedNamespaces = new Set(selectedNamespaces);
+
+    if (newSelectedRepos.has(repoName)) {
+      newSelectedRepos.delete(repoName);
+      
+      // If NO repos in this namespace are selected anymore, uncheck the namespace
+      const nsRepos = repos[nsId] || [];
+      if (nsRepos.every(r => !newSelectedRepos.has(r.name))) {
+        newSelectedNamespaces.delete(nsId);
       }
+    } else {
+      newSelectedRepos.add(repoName);
+      // If ANY repo is checked, check the parent item as requested
+      newSelectedNamespaces.add(nsId);
     }
+    
     setSelectedRepos(newSelectedRepos);
+    setSelectedNamespaces(newSelectedNamespaces);
   };
 
   const toggleTargetProvider = (id: string) => {
@@ -1089,13 +1099,28 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     const newSelectedRepos = new Set(selectedRepos);
     
     for (const ns of namespaces) {
-      const nsRepos = repos[ns.id] || await (await fetchWithAuth(`/api/v1/source/namespaces/${ns.id}/repos`)).json();
-      nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.id));
+      const nsRepos = repos[ns.id] || await (await fetchWithAuth(`/api/v1/source/namespaces/${ns.id}/repos?type=${ns.type}`)).json();
+      nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.name));
       if (!repos[ns.id]) setRepos(prev => ({ ...prev, [ns.id]: nsRepos }));
     }
     
     setSelectedNamespaces(newSelectedNamespaces);
     setSelectedRepos(newSelectedRepos);
+  };
+
+  const selectNamespaceAll = async (e: React.MouseEvent, nsId: string) => {
+    e.stopPropagation();
+    const newSelectedRepos = new Set(selectedRepos);
+    const newSelectedNamespaces = new Set(selectedNamespaces);
+    const ns = namespaces.find(n => n.id === nsId);
+    
+    const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?type=${ns?.type || ''}`)).json();
+    nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.name));
+    if (!repos[nsId]) setRepos(prev => ({ ...prev, [nsId]: nsRepos }));
+    
+    newSelectedNamespaces.add(nsId);
+    setSelectedRepos(newSelectedRepos);
+    setSelectedNamespaces(newSelectedNamespaces);
   };
 
   const saveSelection = async () => {
@@ -1110,13 +1135,13 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
     setIsSaving(true);
     try {
-      // Find full repo objects for the selected IDs
-      const selectedRepoObjects = Array.from(selectedRepos).map(id => {
+      // Find full repo objects for the selected names
+      const selectedRepoObjects = Array.from(selectedRepos).map(name => {
         for (const nsId in repos) {
-          const repo = repos[nsId].find(r => r.id === id);
+          const repo = repos[nsId].find(r => r.name === name);
           if (repo) return repo;
         }
-        return { id, name: `repo-${id}`, description: "Automated mirror target", visibility: 'private' as const }; // Fallback
+        return { id: `manual-${name}`, name, description: "Automated mirror target", visibility: 'private' as const }; // Fallback
       });
 
       const res = await fetchWithAuth('/api/v1/source/selection', {
@@ -1124,8 +1149,8 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         body: JSON.stringify({ 
           selectedRepos: selectedRepoObjects.map(r => ({
             ...r,
-            entities: repoEntities[r.id] || syncEntities,
-            branch: repoBranches[r.id] || 'main'
+            entities: repoEntities[r.name] || syncEntities,
+            branch: repoBranches[r.name] || 'main'
           })),
           targetProviderIds: Array.from(selectedTargetProviders),
           entities: syncEntities // Global default
@@ -1135,6 +1160,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         const data = await res.json();
         setProvisioningSummary(data.summary);
         addToast('Mirroring Initiated', `${selectedRepos.size} repositories are now being provisioned and synced.`, 'success');
+        onRefresh(); // Refresh the sync matrix
       } else {
         addToast('Provisioning Failed', 'The server encountered an error during target setup.', 'error');
       }
@@ -1152,6 +1178,156 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
   const sourceProviderObj = providers.find(p => p.isSource);
   const targetProviders = providers.filter(p => !p.isSource);
+
+  const userNamespaces = namespaces.filter(ns => ns.type === 'user');
+  const groupNamespaces = namespaces.filter(ns => ns.type !== 'user');
+
+  const renderNamespace = (ns: Namespace) => (
+    <div key={ns.id} className="glass-card overflow-hidden border-white/5">
+      <div className="flex items-center justify-between p-4 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => toggleNamespace(ns.id)}>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={(e) => { e.stopPropagation(); handleNamespaceCheck(ns.id); }}
+            className="p-1 hover:bg-white/10 rounded transition-colors"
+          >
+            {selectedNamespaces.has(ns.id) ? (
+              <CheckCircle2 className="w-5 h-5 text-cyan-400 glow-cyan" />
+            ) : (
+              <Circle className="w-5 h-5 text-slate-600" />
+            )}
+          </button>
+          <div>
+            <p className="text-sm font-black text-white tracking-tight">{ns.name}</p>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{ns.type} • {ns.repo_count} repos</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
+          {expandedNamespace === ns.id && (
+            <button 
+              onClick={(e) => selectNamespaceAll(e, ns.id)}
+              className="text-[9px] font-black text-cyan-400 uppercase tracking-widest px-2 py-1 bg-cyan-500/10 rounded border border-cyan-500/20 hover:bg-cyan-500/20 transition-all"
+            >
+              Select All
+            </button>
+          )}
+          <ChevronDown className={cn("w-5 h-5 text-slate-500 transition-transform", expandedNamespace === ns.id && "rotate-180")} />
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {expandedNamespace === ns.id && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="border-t border-white/5 bg-black/20"
+          >
+            <div className="p-4 space-y-2">
+              {repos[ns.id]?.map((repo) => {
+                const isSynced = syncMatrix.some(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`);
+                const isSelected = selectedRepos.has(repo.name) || isSynced;
+
+                return (
+                  <div 
+                    key={repo.id} 
+                    className={cn(
+                      "flex items-center justify-between p-3 rounded-lg transition-colors group cursor-pointer",
+                      isSelected ? "bg-white/5 border border-white/5" : "hover:bg-white/5 border border-transparent"
+                    )}
+                    onClick={() => handleRepoCheck(ns.id, repo.name)}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-1">
+                        {isSelected ? (
+                          <CheckCircle2 className="w-4 h-4 text-cyan-400 glow-cyan" />
+                        ) : (
+                          <Circle className="w-4 h-4 text-slate-700" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className={cn("text-sm font-bold transition-colors", isSelected ? "text-white" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
+                          <span className={cn(
+                            "text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter border",
+                            repo.visibility === 'public' ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border-amber-500/20"
+                          )}>
+                            {repo.visibility}
+                          </span>
+                          {isSynced && (
+                            <span className="text-[7px] font-black bg-cyan-500/10 text-cyan-400 px-1.5 py-0.5 rounded uppercase tracking-widest border border-cyan-500/20 shadow-[0_0_10px_rgba(0,243,255,0.1)]">Configured</span>
+                          )}
+                        </div>
+                        <div className="flex gap-2 items-center mt-1">
+                          {isSelected ? (
+                            <div className="flex items-center gap-2">
+                              <div className="flex gap-1">
+                                {['code', 'issues', 'milestones', 'releases', 'snippets'].map(ent => (
+                                  <button
+                                    key={ent}
+                                    onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.name, ent); }}
+                                    className={cn(
+                                      "px-1.5 py-0.5 rounded-[4px] text-[7px] font-black uppercase tracking-tighter border transition-all",
+                                      (repoEntities[repo.name] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.entities : syncEntities) || []).includes(ent)
+                                        ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
+                                        : "bg-white/5 border-white/10 text-slate-600 hover:border-white/20"
+                                    )}
+                                  >
+                                    {ent}
+                                  </button>
+                                ))}
+                              </div>
+
+                              <div className="flex items-center gap-1 ml-2 bg-black/20 px-2 py-0.5 rounded border border-white/5">
+                                <Terminal className="w-2 h-2 text-slate-500" />
+                                <input 
+                                  placeholder="branch"
+                                  className="bg-transparent border-none text-[8px] text-magenta-400 font-black uppercase tracking-widest focus:ring-0 w-16 p-0"
+                                  value={repoBranches[repo.name] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.branch : 'main') || 'main'}
+                                  onChange={(e) => updateRepoBranch(repo.name, e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              </div>
+                            </div>
+                            ) : (
+                            <p className="text-[10px] text-slate-600 font-medium">{repo.description || 'No description provided'}</p>
+                            )}
+                            </div>
+                            </div>
+                            </div>
+                            <div className={cn(
+                            "text-[10px] font-black uppercase tracking-widest transition-opacity",
+                            isSelected ? "text-cyan-400 opacity-100" : "text-slate-700 opacity-0 group-hover:opacity-100"
+                            )}>
+                            {isSelected ? (isSynced ? "Mirror Configured" : "Mirror Active") : "Enable Mirror"}
+                            </div>
+                            </div>
+                            );
+                            })}              
+              {hasMoreRepos[ns.id] && (
+                <button 
+                  onClick={(e) => handleLoadMore(e, ns.id)}
+                  disabled={isLoadingRepos[ns.id]}
+                  className="w-full py-3 mt-2 border border-dashed border-white/10 rounded-lg text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] hover:bg-white/5 hover:text-cyan-400 transition-all flex items-center justify-center gap-2"
+                >
+                  {isLoadingRepos[ns.id] ? (
+                    <div className="w-3 h-3 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Plus className="w-3 h-3" />
+                  )}
+                  {isLoadingRepos[ns.id] ? "Requesting more nodes..." : "Load More Repositories"}
+                </button>
+              )}
+              {!repos[ns.id] && (
+                <div className="flex justify-center py-4">
+                  <RefreshCw className="w-5 h-5 text-cyan-400 animate-spin" />
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
 
   return (
     <div className="space-y-8">
@@ -1308,7 +1484,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4">
+      <div className="grid grid-cols-1 gap-8">
         {namespaces.length === 0 && (
           <div className="glass-card p-12 text-center border-dashed border-white/10">
             <Database className="w-12 h-12 text-slate-700 mx-auto mb-4" />
@@ -1318,147 +1494,35 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
             </p>
           </div>
         )}
-        {namespaces.map((ns) => (
-          <div key={ns.id} className="glass-card overflow-hidden border-white/5">
-            <div className="flex items-center justify-between p-4 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => toggleNamespace(ns.id)}>
-              <div className="flex items-center gap-4">
-                <button 
-                  onClick={(e) => { e.stopPropagation(); handleNamespaceCheck(ns.id); }}
-                  className="p-1 hover:bg-white/10 rounded transition-colors"
-                >
-                  {selectedNamespaces.has(ns.id) ? (
-                    <CheckCircle2 className="w-5 h-5 text-cyan-400 glow-cyan" />
-                  ) : (
-                    <Circle className="w-5 h-5 text-slate-600" />
-                  )}
-                </button>
-                <div>
-                  <p className="text-sm font-black text-white tracking-tight">{ns.name}</p>
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{ns.type} • {ns.repo_count} repos</p>
-                </div>
-              </div>
-              <ChevronDown className={cn("w-5 h-5 text-slate-500 transition-transform", expandedNamespace === ns.id && "rotate-180")} />
+
+        {userNamespaces.length > 0 && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 px-2">
+              <Box className="w-4 h-4 text-magenta-400" />
+              <h4 className="text-[10px] font-black text-white uppercase tracking-[0.3em]">Personal User Space</h4>
             </div>
-
-            <AnimatePresence>
-              {expandedNamespace === ns.id && (
-                <motion.div 
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="border-t border-white/5 bg-black/20"
-                >
-                  <div className="p-4 space-y-2">
-                    {repos[ns.id]?.map((repo) => {
-                      const isSynced = syncMatrix.some(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`);
-                      const isSelected = selectedRepos.has(repo.id) || isSynced;
-                      
-                      return (
-                        <div 
-                          key={repo.id} 
-                          className={cn(
-                            "flex items-center justify-between p-3 rounded-lg transition-colors group cursor-pointer",
-                            isSelected ? "bg-white/5 border border-white/5" : "hover:bg-white/5 border border-transparent"
-                          )}
-                          onClick={() => handleRepoCheck(ns.id, repo.id)}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="p-1">
-                              {isSelected ? (
-                                <CheckCircle2 className="w-4 h-4 text-cyan-400 glow-cyan" />
-                              ) : (
-                                <Circle className="w-4 h-4 text-slate-700" />
-                              )}
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <p className={cn("text-sm font-bold transition-colors", isSelected ? "text-white" : "text-slate-300 group-hover:text-white")}>{repo.name}</p>
-                                <span className={cn(
-                                  "text-[7px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter border",
-                                  repo.visibility === 'public' ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" : "bg-amber-500/10 text-amber-500 border-amber-500/20"
-                                )}>
-                                  {repo.visibility}
-                                </span>
-                                {isSynced && (
-                                  <span className="text-[7px] font-black bg-cyan-500/10 text-cyan-400 px-1.5 py-0.5 rounded uppercase tracking-widest border border-cyan-500/20 shadow-[0_0_10px_rgba(0,243,255,0.1)]">Configured</span>
-                                )}
-                              </div>
-                              <div className="flex gap-2 items-center mt-1">
-                                {isSelected ? (
-                                  <div className="flex items-center gap-2">
-                                    <div className="flex gap-1">
-                                      {['code', 'issues', 'milestones', 'releases', 'snippets'].map(ent => (
-                                        <button
-                                          key={ent}
-                                          onClick={(e) => { e.stopPropagation(); toggleRepoEntity(repo.id, ent); }}
-                                          className={cn(
-                                            "px-1.5 py-0.5 rounded-[4px] text-[7px] font-black uppercase tracking-tighter border transition-all",
-                                            (repoEntities[repo.id] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.entities : syncEntities) || []).includes(ent)
-                                              ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
-                                              : "bg-white/5 border-white/10 text-slate-600 hover:border-white/20"
-                                          )}
-                                        >
-                                          {ent}
-                                        </button>
-                                      ))}
-                                    </div>
-
-                                    <div className="flex items-center gap-1 ml-2 bg-black/20 px-2 py-0.5 rounded border border-white/5">
-                                      <Terminal className="w-2 h-2 text-slate-500" />
-                                      <input 
-                                        placeholder="branch"
-                                        className="bg-transparent border-none text-[8px] text-magenta-400 font-black uppercase tracking-widest focus:ring-0 w-16 p-0"
-                                        value={repoBranches[repo.id] || (isSynced ? syncMatrix.find(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`)?.branch : 'main') || 'main'}
-                                        onChange={(e) => updateRepoBranch(repo.id, e.target.value)}
-                                        onClick={(e) => e.stopPropagation()}
-                                      />
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <p className="text-[10px] text-slate-600 font-medium">{repo.description || 'No description provided'}</p>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          <div className={cn(
-                            "text-[10px] font-black uppercase tracking-widest transition-opacity",
-                            isSelected ? "text-cyan-400 opacity-100" : "text-slate-700 opacity-0 group-hover:opacity-100"
-                          )}>
-                            {isSelected ? (isSynced ? "Mirror Configured" : "Mirror Active") : "Enable Mirror"}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    
-                    {hasMoreRepos[ns.id] && (
-                      <button 
-                        onClick={(e) => handleLoadMore(e, ns.id)}
-                        disabled={isLoadingRepos[ns.id]}
-                        className="w-full py-3 mt-2 border border-dashed border-white/10 rounded-lg text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] hover:bg-white/5 hover:text-cyan-400 transition-all flex items-center justify-center gap-2"
-                      >
-                        {isLoadingRepos[ns.id] ? (
-                          <div className="w-3 h-3 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-                        ) : (
-                          <Plus className="w-3 h-3" />
-                        )}
-                        {isLoadingRepos[ns.id] ? "Requesting more nodes..." : "Load More Repositories"}
-                      </button>
-                    )}
-                    {!repos[ns.id] && (
-                      <div className="flex justify-center py-4">
-                        <RefreshCw className="w-5 h-5 text-cyan-400 animate-spin" />
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <div className="grid grid-cols-1 gap-4">
+              {userNamespaces.map(renderNamespace)}
+            </div>
           </div>
-        ))}
+        )}
+
+        {groupNamespaces.length > 0 && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 px-2">
+              <Layers className="w-4 h-4 text-cyan-400" />
+              <h4 className="text-[10px] font-black text-white uppercase tracking-[0.3em]">Groups & Organizations</h4>
+            </div>
+            <div className="grid grid-cols-1 gap-4">
+              {groupNamespaces.map(renderNamespace)}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 };
+
 
 export default function App() {
   return (
@@ -1485,7 +1549,9 @@ function AppContent() {
     log_retention_days: 7,
     max_concurrent_syncs: 5,
     bidirectional_sync: false,
-    conflict_strategy: 'source_wins'
+    conflict_strategy: 'source_wins',
+    default_description: 'Automated Mirror - {url}',
+    default_tags: 'hydrozoa-mirror'
   });
 
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -1567,13 +1633,13 @@ function AppContent() {
       const statsData = await statsRes.json();
       const infoData = await infoRes.json();
 
-      setProviders(providersData);
-      setSyncMatrix(matrixData.sync_matrix);
-      setDlqItems(dlqData.dlq_items);
-      setLogs(logsData.logs);
-      setMetrics(metricsData);
-      setSystemStats(statsData);
-      setProvidersInfo(infoData.providers);
+      if (Array.isArray(providersData)) setProviders(providersData);
+      if (matrixData && Array.isArray(matrixData.sync_matrix)) setSyncMatrix(matrixData.sync_matrix);
+      if (dlqData && Array.isArray(dlqData.dlq_items)) setDlqItems(dlqData.dlq_items);
+      if (logsData && Array.isArray(logsData.logs)) setLogs(logsData.logs);
+      if (Array.isArray(metricsData)) setMetrics(metricsData);
+      if (statsData) setSystemStats(statsData);
+      if (infoData && Array.isArray(infoData.providers)) setProvidersInfo(infoData.providers);
     } catch (err) {
       addToast('Data Fetch Error', 'Failed to retrieve telemetry and state from server.', 'error');
     }
@@ -2691,7 +2757,7 @@ function AppContent() {
 
                         <div>
                           <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Conflict Resolution Strategy</label>
-                          <select 
+                          <select
                             value={settings.conflict_strategy}
                             onChange={(e) => setSettings({...settings, conflict_strategy: e.target.value})}
                             className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-medium cursor-pointer"
@@ -2703,6 +2769,30 @@ function AppContent() {
                           </select>
                         </div>
 
+                        <div className="pt-4 border-t border-white/5 space-y-4">
+                          <div>
+                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Default Mirror Description</label>
+                            <input
+                              type="text"
+                              value={settings.default_description}
+                              onChange={(e) => setSettings({...settings, default_description: e.target.value})}
+                              placeholder="Automated Mirror - {url}"
+                              className="w-full bg-black/20 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-mono text-[10px]"
+                            />
+                            <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-1.5 ml-1">Use {'{url}'} to inject the source repository URL</p>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">Default Tags / Topics</label>
+                            <input
+                              type="text"
+                              value={settings.default_tags}
+                              onChange={(e) => setSettings({...settings, default_tags: e.target.value})}
+                              placeholder="hydrozoa-mirror, automated"
+                              className="w-full bg-black/20 border border-white/10 rounded-xl px-5 py-3 text-white focus:ring-2 focus:ring-cyan-500/50 outline-none transition-all font-mono text-[10px]"
+                            />
+                            <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-1.5 ml-1">Comma separated list of tags to apply</p>
+                          </div>
+                        </div>
                         <div className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
                           <div>
                             <p className="text-sm font-black text-white uppercase tracking-tight">Encryption Hardening</p>
