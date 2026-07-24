@@ -92,6 +92,10 @@ Ensure the following variables are set in your deployment environment:
 - `JWT_SECRET`: A unique random value of at least 32 characters.
 - `HYDROZOA_MASTER_KEY`: A unique random value of at least 32 characters. Back it up securely; it encrypts provider credentials.
 - `BOOTSTRAP_ADMIN_PASSWORD`: A strong value of at least 12 characters, required only when the first administrator is created.
+- `PROVIDER_REQUEST_TIMEOUT_MS`: Provider API timeout in milliseconds; defaults to `30000`.
+- `DATABASE_POOL_MAX`: Maximum PostgreSQL connections per instance; defaults to `20`.
+- `DATABASE_IDLE_TIMEOUT_MS`: Idle PostgreSQL connection timeout; defaults to `30000`.
+- `DATABASE_CONNECT_TIMEOUT_MS`: PostgreSQL connection attempt timeout; defaults to `10000`.
 
 Do not commit a populated Kubernetes Secret. Copy
 `kubernetes/secret.example.yaml` outside the repository, fill it using a secret

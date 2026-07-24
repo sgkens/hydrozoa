@@ -31,6 +31,11 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
+import {
+  buildMirrorDescription,
+  DEFAULT_MIRROR_DESCRIPTION,
+  type MirrorDescriptionMode
+} from './server/mirror-description';
 
 const Chart = React.lazy(() => import('react-apexcharts'));
 
@@ -301,7 +306,8 @@ const ReactionButton = ({
   disabled, 
   variant = 'primary',
   icon: Icon,
-  type = 'button'
+  type = 'button',
+  title
 }: { 
   children?: React.ReactNode, 
   onClick?: (e?: any) => void, 
@@ -310,7 +316,8 @@ const ReactionButton = ({
   disabled?: boolean,
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger',
   icon?: any,
-  type?: 'button' | 'submit' | 'reset'
+  type?: 'button' | 'submit' | 'reset',
+  title?: string
 }) => {
   const variants = {
     primary: "bg-cyan-500 text-white hover:bg-cyan-400 glow-cyan",
@@ -322,6 +329,7 @@ const ReactionButton = ({
   return (
     <button
       type={type}
+      title={title}
       onClick={onClick}
       disabled={disabled || isLoading}
       className={cn(
@@ -1585,7 +1593,9 @@ function AppContent() {
     log_retention_days: 7,
     max_concurrent_syncs: 5,
     bidirectional_sync: false,
-    conflict_strategy: 'source_wins'
+    conflict_strategy: 'source_wins',
+    mirror_description_mode: 'default' as MirrorDescriptionMode,
+    mirror_description_text: null as string | null
   });
 
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -2921,27 +2931,82 @@ function AppContent() {
                             <option value="source_wins">Source Wins (Overwrite Target)</option>
                             <option value="target_wins">Target Wins (Overwrite Source)</option>
                             <option value="manual">Manual Intervention (DLQ)</option>
-                            <option value="latest_wins">Latest Commit Wins</option>
                           </select>
                         </div>
 
                         <div className="flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5">
                           <div>
-                            <p className="text-sm font-black text-white uppercase tracking-tight">Encryption Hardening</p>
-                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">AES-256-GCM for all tokens</p>
+                            <p className="text-sm font-black text-white uppercase tracking-tight">Credential Encryption</p>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">AES-256-GCM is always enforced</p>
                           </div>
-                          <button 
-                            onClick={() => setSettings({...settings, encryption_enabled: !settings.encryption_enabled})}
-                            className={cn(
-                              "w-12 h-6 rounded-full transition-all relative",
-                              settings.encryption_enabled ? "bg-cyan-500" : "bg-slate-700"
+                          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-400">
+                            Enforced
+                          </span>
+                        </div>
+
+                        <div className="space-y-4 rounded-xl border border-white/5 bg-white/[0.03] p-5">
+                          <div>
+                            <p className="text-sm font-black text-white uppercase tracking-tight">Mirror Description</p>
+                            <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                              Appended when Hydrozoa provisions a target repository
+                            </p>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2" role="group" aria-label="Mirror description policy">
+                            {([
+                              ['default', 'Hydrozoa default'],
+                              ['custom', 'Custom'],
+                              ['none', 'Do not append']
+                            ] as const).map(([mode, label]) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                aria-pressed={settings.mirror_description_mode === mode}
+                                onClick={() => setSettings({ ...settings, mirror_description_mode: mode })}
+                                className={cn(
+                                  "rounded-lg border px-3 py-2 text-[9px] font-black uppercase tracking-wider transition-colors",
+                                  settings.mirror_description_mode === mode
+                                    ? "border-cyan-500/50 bg-cyan-500/15 text-cyan-300"
+                                    : "border-white/10 bg-white/5 text-slate-500 hover:text-white"
+                                )}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                          {settings.mirror_description_mode === 'custom' && (
+                            <div>
+                              <label htmlFor="mirror-description-text" className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-500">
+                                Custom appended text
+                              </label>
+                              <textarea
+                                id="mirror-description-text"
+                                maxLength={512}
+                                rows={3}
+                                value={settings.mirror_description_text || ''}
+                                onChange={(event) => setSettings({ ...settings, mirror_description_text: event.target.value })}
+                                placeholder="Replica of {repo} — source: {url}"
+                                className="w-full resize-y rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition-colors placeholder:text-slate-700 focus:border-cyan-500/50"
+                              />
+                              <p className="mt-2 text-[10px] text-slate-500">
+                                Variables: <code>{'{repo}'}</code> and <code>{'{url}'}</code>. Maximum 512 characters.
+                              </p>
+                            </div>
+                          )}
+                          <div className="rounded-lg border border-white/5 bg-black/20 p-3">
+                            <p className="text-[9px] font-black uppercase tracking-widest text-slate-600">Preview</p>
+                            <p className="mt-2 break-words text-xs text-slate-300">
+                              {buildMirrorDescription(
+                                'Example source repository',
+                                'https://git.example/team/project',
+                                'team/project',
+                                settings.mirror_description_mode,
+                                settings.mirror_description_text
+                              ) || 'Example source repository'}
+                            </p>
+                            {settings.mirror_description_mode === 'default' && (
+                              <p className="mt-2 text-[9px] text-slate-600">Default template: {DEFAULT_MIRROR_DESCRIPTION}</p>
                             )}
-                          >
-                            <div className={cn(
-                              "absolute top-1 w-4 h-4 bg-white rounded-full transition-all",
-                              settings.encryption_enabled ? "left-7" : "left-1"
-                            )} />
-                          </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -2983,8 +3048,8 @@ function AppContent() {
                         </div>
                         <p className="text-xs text-slate-500 leading-relaxed">Purging logs or resetting the sync matrix is irreversible. Proceed with extreme caution.</p>
                         <div className="flex gap-3">
-                          <ReactionButton variant="danger" className="flex-1" onClick={() => addToast('Logs Cleared', 'System logs have been purged.', 'info')}>Clear Logs</ReactionButton>
-                          <ReactionButton variant="danger" className="flex-1" onClick={() => addToast('Matrix Reset', 'Synchronization matrix has been reinitialized.', 'warning')}>Reset Matrix</ReactionButton>
+                          <ReactionButton variant="danger" className="flex-1 opacity-50" disabled title="Administrative purge API is not implemented">Clear Logs</ReactionButton>
+                          <ReactionButton variant="danger" className="flex-1 opacity-50" disabled title="Administrative reset API is not implemented">Reset Matrix</ReactionButton>
                         </div>
                       </div>
                     </div>
@@ -3067,6 +3132,13 @@ function AppContent() {
                     });
                     if (res.ok) {
                       addToast('Configuration Synchronized', 'System settings have been updated and persisted.', 'success');
+                    } else {
+                      const error = await res.json().catch(() => null);
+                      addToast(
+                        'Configuration Rejected',
+                        error?.details?.[0]?.message || error?.error || 'The server rejected these settings.',
+                        'error'
+                      );
                     }
                   }}
                   variant="primary"

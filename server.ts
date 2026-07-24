@@ -13,6 +13,9 @@ import fs from "fs";
 import os from "os";
 import { runGit } from "./src/server/git-process.js";
 import {
+  buildMirrorDescription
+} from "./src/server/mirror-description.js";
+import {
   getRequestToken,
   loadSecurityConfiguration,
   redactSensitiveText,
@@ -57,11 +60,22 @@ const syncMatrixPatchSchema = z.object({
 }).strict().refine(value => Object.keys(value).length > 0, "At least one field is required");
 const settingsSchema = z.object({
   sync_interval: z.number().int().min(1).max(1440),
+  encryption_enabled: z.literal(true),
   log_retention_days: z.number().int().min(1).max(3650),
   max_concurrent_syncs: z.number().int().min(1).max(50),
   bidirectional_sync: z.boolean(),
-  conflict_strategy: z.enum(["source_wins", "target_wins", "manual"])
-}).strict();
+  conflict_strategy: z.enum(["source_wins", "target_wins", "manual"]),
+  mirror_description_mode: z.enum(["default", "custom", "none"]),
+  mirror_description_text: z.string().max(512).nullable()
+}).strict().superRefine((value, context) => {
+  if (value.mirror_description_mode === "custom" && !value.mirror_description_text?.trim()) {
+    context.addIssue({
+      code: "custom",
+      path: ["mirror_description_text"],
+      message: "A custom mirror description is required when custom mode is selected"
+    });
+  }
+});
 const sourceSelectionSchema = z.object({
   selectedRepos: z.array(z.object({
     id: z.union([z.string(), z.number()]).transform(String),
@@ -159,7 +173,31 @@ if (!DATABASE_URL) {
   sysLog.error("DATABASE_URL is not set. Database is mandatory for production.");
   process.exit(1);
 }
-const pool = new Pool({ connectionString: DATABASE_URL });
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] || "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const PROVIDER_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv("PROVIDER_REQUEST_TIMEOUT_MS", 30_000);
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  max: readPositiveIntegerEnv("DATABASE_POOL_MAX", 20),
+  idleTimeoutMillis: readPositiveIntegerEnv("DATABASE_IDLE_TIMEOUT_MS", 30_000),
+  connectionTimeoutMillis: readPositiveIntegerEnv("DATABASE_CONNECT_TIMEOUT_MS", 10_000)
+});
+
+async function runRetentionCleanup(): Promise<void> {
+  await pool.query(`
+    DELETE FROM logs
+    WHERE timestamp < NOW() - (
+      SELECT make_interval(days => log_retention_days)
+      FROM system_settings
+      WHERE id = 1
+    )
+  `);
+  await pool.query("DELETE FROM api_metrics WHERE timestamp < NOW() - INTERVAL '30 days'");
+  await pool.query("DELETE FROM webhook_deliveries WHERE received_at < NOW() - INTERVAL '30 days'");
+}
 
 async function initDb() {
   sysLog.info("Initializing database schema...");
@@ -258,8 +296,20 @@ async function initDb() {
         log_retention_days INTEGER DEFAULT 7,
         max_concurrent_syncs INTEGER DEFAULT 5,
         bidirectional_sync BOOLEAN DEFAULT FALSE,
-        conflict_strategy TEXT DEFAULT 'source_wins'
+        conflict_strategy TEXT DEFAULT 'source_wins',
+        mirror_description_mode TEXT DEFAULT 'default',
+        mirror_description_text TEXT DEFAULT NULL
       );
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_settings' AND column_name='mirror_description_mode') THEN
+          ALTER TABLE system_settings ADD COLUMN mirror_description_mode TEXT DEFAULT 'default';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_settings' AND column_name='mirror_description_text') THEN
+          ALTER TABLE system_settings ADD COLUMN mirror_description_text TEXT DEFAULT NULL;
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS api_metrics (
         id TEXT PRIMARY KEY,
@@ -319,16 +369,7 @@ async function initDb() {
       sysLog.success("Stuck sync operations reset to pending.");
     }
 
-    await pool.query(`
-      DELETE FROM logs
-      WHERE timestamp < NOW() - (
-        SELECT make_interval(days => log_retention_days)
-        FROM system_settings
-        WHERE id = 1
-      )
-    `);
-    await pool.query("DELETE FROM api_metrics WHERE timestamp < NOW() - INTERVAL '30 days'");
-    await pool.query("DELETE FROM webhook_deliveries WHERE received_at < NOW() - INTERVAL '30 days'");
+    await runRetentionCleanup();
   } catch (err) {
     sysLog.error(`Database initialization failed: ${err}`);
     throw err;
@@ -349,7 +390,11 @@ async function addLog(log: any) {
 
 async function trackedFetch(providerId: string, url: string, options: any) {
   try {
-    const res = await fetch(url, options);
+    const timeoutSignal = AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS);
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, timeoutSignal])
+      : timeoutSignal;
+    const res = await fetch(url, { ...options, signal });
     
     // Extract rate limits (GitHub/GitLab/Gitea patterns)
     const limit = res.headers.get('x-ratelimit-limit') || res.headers.get('ratelimit-limit');
@@ -538,21 +583,17 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   const type = provider.type.toLowerCase();
   const isPrivate = visibility === 'private';
   
-  // Step 1: Sanitize and prepare description
-  // GitHub API is extremely strict: NO control characters (\n, \r, \t) allowed in description
-  let sanitizedBaseDesc = (description || "").replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').trim();
-  
-  let finalDescription = sanitizedBaseDesc;
-  if (sourceUrl) {
-    const mirrorNote = ` [Managed by Hydrozoa - Mirrored from: ${sourceUrl}]`;
-    // Ensure we don't exceed length limits (usually 255-1024 depending on provider, keeping it safe)
-    if (!finalDescription.includes("Mirrored from")) {
-      finalDescription = (finalDescription + mirrorNote).substring(0, 255);
-    }
-  }
-  
-  // Final pass to ensure NO control characters remain after concatenation
-  finalDescription = finalDescription.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').replace(/\s+/g, ' ').trim();
+  const settingsResult = await pool.query(
+    "SELECT mirror_description_mode, mirror_description_text FROM system_settings WHERE id = 1"
+  );
+  const descriptionSettings = settingsResult.rows[0] || {};
+  const finalDescription = buildMirrorDescription(
+    description,
+    sourceUrl,
+    repoName,
+    descriptionSettings.mirror_description_mode || "default",
+    descriptionSettings.mirror_description_text
+  );
 
   sysLog.info(`Provisioning target: ${repoName} on ${provider.name} (${provider.type})`);
   let baseUrl = provider.url.replace(/\/$/, '');
@@ -1430,6 +1471,7 @@ const runSyncEngine = async () => {
     const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
     const settings = settingsRes.rows[0];
     syncIntervalMinutes = settings?.sync_interval || 15;
+    await runRetentionCleanup();
 
     const matrixRes = await pool.query('SELECT * FROM sync_matrix');
     if (matrixRes.rows.length === 0) {
@@ -2666,7 +2708,15 @@ async function startServer() {
   app.post("/api/v1/system/settings", authenticateToken, async (req, res) => {
     const body = parseRequestBody(settingsSchema, req, res);
     if (!body) return;
-    const { sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy } = body;
+    const {
+      sync_interval,
+      log_retention_days,
+      max_concurrent_syncs,
+      bidirectional_sync,
+      conflict_strategy,
+      mirror_description_mode,
+      mirror_description_text
+    } = body;
     try {
       await pool.query(
         `UPDATE system_settings SET 
@@ -2674,9 +2724,19 @@ async function startServer() {
           log_retention_days = $2, 
           max_concurrent_syncs = $3, 
           bidirectional_sync = $4, 
-          conflict_strategy = $5 
+          conflict_strategy = $5,
+          mirror_description_mode = $6,
+          mirror_description_text = $7
         WHERE id = 1`,
-        [sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy]
+        [
+          sync_interval,
+          log_retention_days,
+          max_concurrent_syncs,
+          bidirectional_sync,
+          conflict_strategy,
+          mirror_description_mode,
+          mirror_description_mode === "custom" ? mirror_description_text?.trim() : null
+        ]
       );
       
       await addLog({
@@ -2712,6 +2772,9 @@ async function startServer() {
 
   return await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => {
     const server = app.listen(PORT, "0.0.0.0", () => {
+      server.requestTimeout = 15 * 60_000;
+      server.headersTimeout = 15_000;
+      server.keepAliveTimeout = 5_000;
       sysLog.startup(`Server running on http://localhost:${PORT}`);
       resolve(server);
     });

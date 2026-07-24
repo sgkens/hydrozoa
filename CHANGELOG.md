@@ -24,7 +24,9 @@ All notable changes to Hydrozoa are documented in this file.
 - Provider pagination, runtime API contracts, retention cleanup, production probes, and graceful shutdown.
 - Multi-stage non-root Docker image and hardened Kubernetes deployment templates.
 - Security and Git process release-gate tests.
+- Configurable mirror-description policies with default, custom-template, and omit modes.
 
 ### Performance
 
 - Deduplicate and visibility-gate polling, lazy-load charting, bound Git output, and remove randomized telemetry.
+- Bound provider requests and database pool waits, and run retention cleanup throughout long-lived processes.
