@@ -30,6 +30,8 @@ server_out.log
 .jekyll-metadata
 .jekyll-cache/
 _site/
+.bundle/
+**/vendor/bundle/
 
 # IDEs and Editors
 .vscode/
