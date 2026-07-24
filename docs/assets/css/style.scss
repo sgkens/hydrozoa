@@ -40,7 +40,7 @@ img { max-width: 100%; }
 .page-content { padding: 0 0 96px; }
 .skip-link {
   position: fixed; top: 12px; left: 12px; z-index: 1000; padding: 10px 16px;
-  transform: translateY(-150%); background: white; color: $deep; border-radius: 8px;
+  transform: translateY(-150%); background: $cyan; color: $deep; border-radius: 8px;
 }
 .skip-link:focus { transform: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
@@ -186,11 +186,13 @@ p,li { color: $muted; line-height: 1.72; }
 .page-content > .wrapper > h1:first-child + p { max-width: 760px; font-size: 1.12rem; }
 .page-content h2:not(.hero h2):not(.section-heading h2):not(.split-copy h2):not(.cta-panel h2) { margin-top: 72px; padding-bottom: 13px; border-bottom: 1px solid $line; font-size: 1.8rem; }
 .page-content h3:not(.feature-card h3) { margin-top: 42px; }
-table { display: table; width: 100%; margin: 24px 0; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid $line; border-radius: 11px; font-size: 13px; }
-th { background: rgba($cyan,.06); color: #c6d8e2; font: 600 10px/1.4 "JetBrains Mono"; text-align: left; text-transform: uppercase; letter-spacing: .08em; }
-th,td { padding: 13px 15px; border-right: 0; border-bottom: 1px solid $line; }
-tr:last-child td { border-bottom: 0; }
-td { color: #8fa4b2; }
+.page-content table { display: table; width: 100%; margin: 24px 0; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid $line; border-radius: 11px; color: $muted; font-size: 13px; }
+.page-content table tr { background: rgba($panel,.38); }
+.page-content table tr:nth-child(even) { background: rgba($panel-strong,.62); }
+.page-content table th { background: rgba($cyan,.06); color: #c6d8e2; font: 600 10px/1.4 "JetBrains Mono"; text-align: left; text-transform: uppercase; letter-spacing: .08em; }
+.page-content table th,.page-content table td { padding: 13px 15px; border: 0; border-bottom: 1px solid $line; }
+.page-content table tr:last-child td { border-bottom: 0; }
+.page-content table td { color: #8fa4b2; }
 blockquote { margin: 28px 0; padding: 18px 22px; border: 1px solid rgba($cyan,.2); border-left: 3px solid $cyan; border-radius: 0 10px 10px 0; background: rgba($cyan,.035); }
 blockquote p { margin: 0; }
 
@@ -198,6 +200,19 @@ blockquote p { margin: 0; }
 code,pre { font-family: "JetBrains Mono",monospace; }
 :not(pre) > code { padding: .18em .42em; border: 1px solid $line; border-radius: 5px; background: rgba(255,255,255,.04); color: #b9ece8; font-size: .86em; }
 div.highlighter-rouge { margin: 24px 0; }
+.page-content pre,
+.page-content pre code,
+.page-content .highlight {
+  background: #050c12 !important;
+}
+.page-content pre {
+  border-color: $line;
+}
+.page-content pre > code {
+  padding: 0;
+  border: 0;
+  color: inherit;
+}
 .highlighter-rouge,
 .highlighter-rouge .highlight,
 .highlighter-rouge pre.highlight {
@@ -205,6 +220,10 @@ div.highlighter-rouge { margin: 24px 0; }
 }
 pre.highlight { position: relative; margin: 0; padding: 22px; overflow-x: auto; border: 1px solid $line; border-radius: 11px; color: #b8c7d0 !important; font-size: 12px; line-height: 1.75; }
 .highlighter-rouge .highlight .err { color: #d48686 !important; background: transparent !important; }
+.highlighter-rouge .highlight .gd,
+.highlighter-rouge .highlight .gd .x { color: #d48686 !important; background: rgba(212,134,134,.09) !important; }
+.highlighter-rouge .highlight .gi,
+.highlighter-rouge .highlight .gi .x { color: #8fc7a7 !important; background: rgba(143,199,167,.08) !important; }
 .highlighter-rouge .highlight .c,.highlighter-rouge .highlight .c1,.highlighter-rouge .highlight .cm { color: #526b79 !important; font-style: italic; }
 .highlighter-rouge .highlight .k,.highlighter-rouge .highlight .kd,.highlighter-rouge .highlight .kn,.highlighter-rouge .highlight .kp,.highlighter-rouge .highlight .kr { color: #b79ad8 !important; }
 .highlighter-rouge .highlight .s,.highlighter-rouge .highlight .s1,.highlighter-rouge .highlight .s2,.highlighter-rouge .highlight .sb { color: #8fc7a7 !important; }
