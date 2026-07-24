@@ -3,43 +3,112 @@ kind: Deployment
 metadata:
   name: hydrozoa
   labels:
-    app: hydrozoa
+    app.kubernetes.io/name: hydrozoa
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
   selector:
     matchLabels:
-      app: hydrozoa
+      app.kubernetes.io/name: hydrozoa
   template:
     metadata:
       labels:
-        app: hydrozoa
+        app.kubernetes.io/name: hydrozoa
     spec:
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-      - name: hydrozoa
-        image: hydrozoa:latest # Replace with your registry image
-        ports:
-        - containerPort: 3000
-        envFrom:
-        - configMapRef:
-            name: hydrozoa-config
+        - name: hydrozoa
+          image: hydrozoa:1.2.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: APP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: hydrozoa-config
+                  key: APP_URL
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hydrozoa-secrets
+                  key: DATABASE_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hydrozoa-secrets
+                  key: JWT_SECRET
+            - name: HYDROZOA_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hydrozoa-secrets
+                  key: HYDROZOA_MASTER_KEY
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hydrozoa-secrets
+                  key: BOOTSTRAP_ADMIN_PASSWORD
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
+      volumes:
+        - name: temporary-files
+          emptyDir:
+            sizeLimit: 4Gi
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: hydrozoa-service
+  name: hydrozoa
 spec:
   selector:
-    app: hydrozoa
+    app.kubernetes.io/name: hydrozoa
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 80
-      targetPort: 3000
-  type: LoadBalancer
+      targetPort: http
+  type: ClusterIP
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: hydrozoa-config
 data:
-  NODE_ENV: "production"
-  # Add other environment variables here
+  APP_URL: "https://hydrozoa.example.com"

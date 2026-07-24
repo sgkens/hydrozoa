@@ -1,5 +1,4 @@
-import React, { useEffect, useState, Component, ReactNode } from 'react';
-import Chart from 'react-apexcharts';
+import React, { useEffect, useRef, useState, Component, ReactNode, Suspense } from 'react';
 import { 
   Activity, 
   Database, 
@@ -32,6 +31,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
+
+const Chart = React.lazy(() => import('react-apexcharts'));
 
 // --- Types ---
 interface Namespace {
@@ -79,11 +80,14 @@ interface SyncMatrixItem {
 
 interface DLQItem {
   id: string;
-  repository_id: string;
-  target_provider: string;
-  entity_type: string;
-  failure_reason: string;
-  last_attempt: string;
+  sync_matrix_id?: string;
+  source_repo: string;
+  target_node: string;
+  target_provider_id?: string;
+  error_code: string;
+  error_message: string;
+  timestamp: string;
+  status: 'pending' | 'replaying';
 }
 
 interface Log {
@@ -841,23 +845,27 @@ const SyncManagementModal = ({ item, onClose, onUpdate, addToast }: { item: Sync
         <div className="flex-1 overflow-y-auto p-6">
           {activeSubTab === 'history' ? (
             <div className="space-y-4">
-              {[...Array(5)].map((_, i) => (
-                <div key={i} className="p-4 rounded-xl bg-white/5 border border-white/5 flex items-center justify-between group hover:border-cyan-500/30 transition-all">
+              {item.targets.some(target => target.last_sync) ? item.targets.filter(target => target.last_sync).map((target) => (
+                <div key={target.provider_id} className="p-4 rounded-xl bg-white/5 border border-white/5 flex items-center justify-between group hover:border-cyan-500/30 transition-all">
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center">
                       <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                     </div>
                     <div>
-                      <p className="text-sm font-bold text-white">Successful Sync</p>
-                      <p className="text-[10px] text-slate-500 font-mono">Commit: {Math.random().toString(16).slice(2, 9)}</p>
+                      <p className="text-sm font-bold text-white">{target.status === 'synced' ? 'Successful Sync' : 'Latest Sync Attempt'}</p>
+                      <p className="text-[10px] text-slate-500 font-mono">Target: {target.provider_id}</p>
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">{new Date(Date.now() - i * 3600000).toLocaleString()}</p>
-                    <p className="text-[10px] text-cyan-400 font-bold uppercase tracking-widest mt-1">Duration: {Math.floor(Math.random() * 60)}s</p>
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest">{new Date(target.last_sync).toLocaleString()}</p>
+                    <p className="text-[10px] text-cyan-400 font-bold uppercase tracking-widest mt-1">Duration: {item.last_sync_duration || 'not reported'}</p>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-xs font-bold uppercase tracking-widest text-slate-500">
+                  No completed sync history is available yet.
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-8 py-4">
@@ -914,18 +922,15 @@ const SyncManagementModal = ({ item, onClose, onUpdate, addToast }: { item: Sync
   );
 };
 const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
-  const token = localStorage.getItem('hydrozoa_token');
   const headers = {
     ...options.headers,
-    'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json'
   };
   
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetch(url, { ...options, headers, credentials: 'same-origin' });
   
-  if (res.status === 401 || res.status === 403) {
-    localStorage.removeItem('hydrozoa_token');
-    window.location.reload();
+  if (res.status === 401) {
+    window.dispatchEvent(new Event('hydrozoa:unauthorized'));
     throw new Error("Unauthorized");
   }
   
@@ -1510,9 +1515,53 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   );
 };
 
+interface AppErrorBoundaryState {
+  error: Error | null;
+}
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('Hydrozoa UI failure', error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <main className="min-h-screen bg-[#05070a] text-white grid place-items-center p-6">
+        <section className="max-w-xl rounded-2xl border border-red-500/30 bg-red-500/5 p-8">
+          <AlertTriangle className="mb-4 h-10 w-10 text-red-400" aria-hidden="true" />
+          <h1 className="text-xl font-black uppercase tracking-tight">Interface recovery required</h1>
+          <p className="mt-3 text-sm text-slate-300">
+            Hydrozoa contained an unexpected display failure. Your mirror configuration is unchanged.
+          </p>
+          <button
+            className="mt-6 rounded-xl bg-cyan-500 px-5 py-3 text-xs font-black uppercase tracking-widest text-slate-950"
+            onClick={() => {
+              this.setState({ error: null });
+              window.location.assign('/');
+            }}
+          >
+            Recover application
+          </button>
+        </section>
+      </main>
+    );
+  }
+}
+
 export default function App() {
   return (
-    <AppContent />
+    <AppErrorBoundary>
+      <Suspense fallback={<div className="min-h-screen bg-[#05070a] text-cyan-400 grid place-items-center">Loading telemetry…</div>}>
+        <AppContent />
+      </Suspense>
+    </AppErrorBoundary>
   );
 }
 
@@ -1526,8 +1575,9 @@ function AppContent() {
   }, [activeTab]);
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('hydrozoa_token'));
-  const [isDefaultPassword, setIsDefaultPassword] = useState(localStorage.getItem('hydrozoa_is_default') === 'true');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isDefaultPassword, setIsDefaultPassword] = useState(false);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [settings, setSettings] = useState({
     sync_interval: 15,
@@ -1555,9 +1605,11 @@ function AppContent() {
   const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
   const [isAppLoading, setIsAppLoading] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const dataRequestInFlight = useRef<Promise<void> | null>(null);
+  const dataAbortController = useRef<AbortController | null>(null);
 
   const addToast = (title: string, message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
-    const id = Math.random().toString(36).substring(2, 9);
+    const id = crypto.randomUUID();
     setToasts(prev => [...prev, { id, title, message, type }]);
     setTimeout(() => removeToast(id), 5000);
   };
@@ -1567,15 +1619,47 @@ function AppContent() {
   };
 
   useEffect(() => {
+    const handleUnauthorized = () => {
+      setIsAuthenticated(false);
+      setIsDefaultPassword(false);
+      setSessionChecked(true);
+    };
+    window.addEventListener('hydrozoa:unauthorized', handleUnauthorized);
+
+    fetch('/api/v1/auth/session', { credentials: 'same-origin' })
+      .then(async res => {
+        if (!res.ok) return null;
+        return await res.json();
+      })
+      .then(data => {
+        setIsAuthenticated(Boolean(data?.authenticated));
+        setIsDefaultPassword(Boolean(data?.user?.isDefaultPassword));
+      })
+      .catch(() => {
+        setIsAuthenticated(false);
+        setIsDefaultPassword(false);
+      })
+      .finally(() => setSessionChecked(true));
+
+    return () => window.removeEventListener('hydrozoa:unauthorized', handleUnauthorized);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionChecked) return;
     if (isAuthenticated) {
       setIsAppLoading(true);
       Promise.all([fetchData(), fetchSettings()]).finally(() => setIsAppLoading(false));
-      const interval = setInterval(fetchData, 30000);
-      return () => clearInterval(interval);
+      const interval = setInterval(() => {
+        if (document.visibilityState === 'visible') void fetchData();
+      }, 30000);
+      return () => {
+        clearInterval(interval);
+        dataAbortController.current?.abort();
+      };
     } else {
       setIsAppLoading(false);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, sessionChecked]);
 
   useEffect(() => {
     if (isAuthenticated && providers.length > 0) {
@@ -1592,23 +1676,33 @@ function AppContent() {
         setProviderLatencies(prev => ({ ...prev, ...results }));
       };
       fetchLatencies();
-      const interval = setInterval(fetchLatencies, 15000);
+      const interval = setInterval(() => {
+        if (document.visibilityState === 'visible') void fetchLatencies();
+      }, 15000);
       return () => clearInterval(interval);
     }
   }, [isAuthenticated, providers.length]);
 
   const fetchData = async () => {
-    try {
+    if (dataRequestInFlight.current) return dataRequestInFlight.current;
+    const controller = new AbortController();
+    dataAbortController.current = controller;
+    const request = (async () => {
+      try {
       const [providersRes, matrixRes, dlqRes, logsRes, metricsRes, statsRes, infoRes] = await Promise.all([
-        fetchWithAuth('/api/v1/auth/providers'),
-        fetchWithAuth('/api/v1/system/sync-matrix'),
-        fetchWithAuth('/api/v1/system/dlq'),
-        fetchWithAuth('/api/v1/logs/translated'),
-        fetchWithAuth('/api/v1/analytics/sync-metrics'),
-        fetchWithAuth('/api/v1/system/stats'),
-        fetchWithAuth('/api/v1/system/providers-info')
+        fetchWithAuth('/api/v1/auth/providers', { signal: controller.signal }),
+        fetchWithAuth('/api/v1/system/sync-matrix', { signal: controller.signal }),
+        fetchWithAuth('/api/v1/system/dlq', { signal: controller.signal }),
+        fetchWithAuth('/api/v1/logs/translated', { signal: controller.signal }),
+        fetchWithAuth('/api/v1/analytics/sync-metrics', { signal: controller.signal }),
+        fetchWithAuth('/api/v1/system/stats', { signal: controller.signal }),
+        fetchWithAuth('/api/v1/system/providers-info', { signal: controller.signal })
       ]);
       
+      const responses = [providersRes, matrixRes, dlqRes, logsRes, metricsRes, statsRes, infoRes];
+      if (responses.some(response => !response.ok)) {
+        throw new Error(`API refresh failed (${responses.filter(response => !response.ok).map(response => response.status).join(', ')})`);
+      }
       const providersData = await providersRes.json();
       const matrixData = await matrixRes.json();
       const dlqData = await dlqRes.json();
@@ -1617,6 +1711,14 @@ function AppContent() {
       const statsData = await statsRes.json();
       const infoData = await infoRes.json();
 
+      if (!Array.isArray(providersData)
+        || !Array.isArray(matrixData?.sync_matrix)
+        || !Array.isArray(dlqData?.dlq_items)
+        || !Array.isArray(logsData?.logs)
+        || !Array.isArray(metricsData)
+        || !Array.isArray(infoData?.providers)) {
+        throw new Error('API returned an invalid response contract');
+      }
       setProviders(providersData);
       setSyncMatrix(matrixData.sync_matrix);
       setDlqItems(dlqData.dlq_items);
@@ -1624,8 +1726,17 @@ function AppContent() {
       setMetrics(metricsData);
       setSystemStats(statsData);
       setProvidersInfo(infoData.providers);
-    } catch (err) {
-      addToast('Data Fetch Error', 'Failed to retrieve telemetry and state from server.', 'error');
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        addToast('Data Fetch Error', err instanceof Error ? err.message : 'Failed to retrieve telemetry and state from server.', 'error');
+      }
+    })();
+    dataRequestInFlight.current = request;
+    try {
+      await request;
+    } finally {
+      if (dataRequestInFlight.current === request) dataRequestInFlight.current = null;
+      if (dataAbortController.current === controller) dataAbortController.current = null;
     }
   };
 
@@ -1651,13 +1762,12 @@ function AppContent() {
       const res = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify({ email, password })
       });
 
       if (res.ok) {
         const data = await res.json();
-        localStorage.setItem('hydrozoa_token', data.token);
-        localStorage.setItem('hydrozoa_is_default', data.user.isDefaultPassword ? 'true' : 'false');
         setIsAuthenticated(true);
         setIsDefaultPassword(data.user.isDefaultPassword);
         setLoginError('');
@@ -1704,7 +1814,6 @@ function AppContent() {
         addToast('Security Updated', 'Access key has been successfully rotated.', 'success');
         setPasswordReset({ current: '', new: '', confirm: '' });
         setIsDefaultPassword(false);
-        localStorage.setItem('hydrozoa_is_default', 'false');
       } else {
         const data = await res.json();
         addToast('Update Failed', data.error || 'Invalid credentials.', 'error');
@@ -1714,13 +1823,30 @@ function AppContent() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('hydrozoa_token');
-    localStorage.removeItem('hydrozoa_is_default');
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin'
+      });
+    } finally {
+      setIsAuthenticated(false);
+      setIsDefaultPassword(false);
+    }
     localStorage.removeItem('hydrozoa_active_tab');
-    setIsAuthenticated(false);
-    setIsDefaultPassword(false);
   };
+
+  if (!sessionChecked || isAppLoading) {
+    return (
+      <div className="h-screen w-screen bg-[#0a0f1a] flex items-center justify-center relative overflow-hidden">
+        <SyncTentacles />
+        <div className="glass-card p-8 flex flex-col items-center border-white/10 z-10">
+          <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-[10px] font-black text-cyan-400 uppercase tracking-[0.2em]">Checking secure session...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -1851,6 +1977,26 @@ function AppContent() {
     }
   };
 
+  const handleRotateProviderCredentials = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editingProvider) return;
+    const formData = new FormData(e.currentTarget);
+    const token = String(formData.get('token') || '');
+    const webhookSecret = String(formData.get('webhookSecret') || '');
+    try {
+      const res = await fetchWithAuth(`/api/v1/auth/providers/${editingProvider.id}/credentials`, {
+        method: 'PUT',
+        body: JSON.stringify({ token, webhookSecret: webhookSecret || undefined })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || 'Credential rotation failed');
+      addToast('Credentials Rotated', `Authenticated as ${data.providerUser}.`, 'success');
+      setEditingProvider(null);
+    } catch (err) {
+      addToast('Credential Error', err instanceof Error ? err.message : 'Credential rotation failed.', 'error');
+    }
+  };
+
   const handleAddProvider = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
@@ -1882,8 +2028,10 @@ function AppContent() {
         method: 'POST'
       });
       if (res.ok) {
-        setDlqItems(dlqItems.filter(item => item.id !== id));
-        addToast('Replay Initiated', `Retrying failed mirror for ${item?.repository_id}`, 'success');
+        setDlqItems(items => items.map(entry =>
+          entry.id === id ? { ...entry, status: 'replaying' } : entry
+        ));
+        addToast('Replay Initiated', `Retrying failed mirror for ${item?.source_repo}`, 'success');
       } else {
         addToast('Replay Failed', 'The server could not restart this operation.', 'error');
       }
@@ -2435,6 +2583,24 @@ function AppContent() {
                         </div>
                       </div>
 
+                      <form onSubmit={handleRotateProviderCredentials} className="p-6 rounded-2xl bg-cyan-500/5 border border-cyan-500/10 space-y-4">
+                        <div>
+                          <p className="text-[10px] font-black text-cyan-400 uppercase tracking-widest mb-1">Rotate Credentials</p>
+                          <p className="text-xs text-slate-500">Credentials are verified against the provider identity API before replacing the encrypted values.</p>
+                        </div>
+                        <label className="block">
+                          <span className="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2">Personal Access Token</span>
+                          <input name="token" type="password" required autoComplete="new-password" className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-cyan-500/50" />
+                        </label>
+                        <label className="block">
+                          <span className="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2">New Webhook Secret (Optional)</span>
+                          <input name="webhookSecret" type="password" autoComplete="new-password" className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-cyan-500/50" />
+                        </label>
+                        <ReactionButton type="submit" variant="primary" className="w-full py-3">
+                          Verify and Rotate
+                        </ReactionButton>
+                      </form>
+
                       <div className="p-6 rounded-2xl bg-red-500/5 border border-red-500/10 space-y-4">
                         <div className="flex items-center gap-2">
                           <AlertTriangle className="w-4 h-4 text-red-400" />
@@ -2628,16 +2794,18 @@ function AppContent() {
                     <tbody className="divide-y divide-white/5">
                       {dlqItems.map((item) => (
                         <tr key={item.id} className="group hover:bg-white/5 transition-colors">
-                          <td className="px-6 py-4 text-sm font-bold text-white">{item.repository_id}</td>
-                          <td className="px-6 py-4 text-xs text-slate-400 uppercase tracking-widest font-black">{item.target_provider}</td>
+                          <td className="px-6 py-4 text-sm font-bold text-white">{item.source_repo}</td>
+                          <td className="px-6 py-4 text-xs text-slate-400 uppercase tracking-widest font-black">{item.target_node}</td>
                           <td className="px-6 py-4">
-                            <span className="px-2 py-1 bg-white/5 rounded text-[9px] font-black text-slate-500 uppercase tracking-widest">{item.entity_type}</span>
+                            <span className="px-2 py-1 bg-white/5 rounded text-[9px] font-black text-slate-500 uppercase tracking-widest">{item.error_code}</span>
                           </td>
-                          <td className="px-6 py-4 text-xs text-red-400/80 font-medium">{item.failure_reason}</td>
-                          <td className="px-6 py-4 text-[10px] text-slate-500 font-mono">{new Date(item.last_attempt).toLocaleString()}</td>
+                          <td className="px-6 py-4 text-xs text-red-400/80 font-medium">{item.error_message}</td>
+                          <td className="px-6 py-4 text-[10px] text-slate-500 font-mono">{new Date(item.timestamp).toLocaleString()}</td>
                           <td className="px-6 py-4 text-right">
                             <ReactionButton 
                               onClick={() => handleReplay(item.id)}
+                              disabled={item.status === 'replaying'}
+                              isLoading={item.status === 'replaying'}
                               variant="ghost"
                               className="p-2 border-cyan-500/20"
                               icon={RefreshCw}

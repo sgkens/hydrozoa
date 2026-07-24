@@ -1,27 +1,101 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
+import cookieParser from "cookie-parser";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
+import { z } from "zod";
 import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import pg from "pg";
-import { exec } from "child_process";
-import { promisify } from "util";
 import fs from "fs";
 import os from "os";
+import { runGit } from "./src/server/git-process.js";
+import {
+  getRequestToken,
+  loadSecurityConfiguration,
+  redactSensitiveText,
+  timingSafeStringEqual,
+  validateProviderBaseUrl
+} from "./src/server/security.js";
 
-const execAsync = promisify(exec);
 const { Pool } = pg;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const JWT_SECRET = process.env.JWT_SECRET || "hydrozoa-deep-sea-secret-99";
+const securityConfig = loadSecurityConfiguration();
+const JWT_SECRET = securityConfig.jwtSecret;
 const MAX_LOGS = 500; // Truncate logs to prevent memory issues
+const syncEntitySchema = z.enum(["code", "issues", "milestones", "wiki", "releases", "snippets"]);
+const loginSchema = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(1).max(1024)
+}).strict();
+const passwordResetSchema = z.object({
+  currentPassword: z.string().min(1).max(1024),
+  newPassword: z.string().min(12).max(1024)
+}).strict();
+const providerSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  type: z.enum(["github", "gitlab", "gitlab_self_hosted", "gitea", "forgejo", "gogs", "bitbucket"]),
+  url: z.string().trim().url().optional(),
+  baseUrl: z.string().trim().url().optional(),
+  token: z.string().trim().min(1).max(4096),
+  isSource: z.boolean().optional().default(false),
+  webhookSecret: z.string().trim().max(4096).optional()
+}).strict();
+const providerCredentialsSchema = z.object({
+  token: z.string().trim().min(1).max(4096),
+  webhookSecret: z.string().trim().max(4096).optional()
+}).strict();
+const syncMatrixPatchSchema = z.object({
+  entities: z.array(syncEntitySchema).min(1).max(6).optional(),
+  sync_interval: z.number().int().min(1).max(1440).optional(),
+  branch: z.string().trim().min(1).max(255).optional()
+}).strict().refine(value => Object.keys(value).length > 0, "At least one field is required");
+const settingsSchema = z.object({
+  sync_interval: z.number().int().min(1).max(1440),
+  log_retention_days: z.number().int().min(1).max(3650),
+  max_concurrent_syncs: z.number().int().min(1).max(50),
+  bidirectional_sync: z.boolean(),
+  conflict_strategy: z.enum(["source_wins", "target_wins", "manual"])
+}).strict();
+const sourceSelectionSchema = z.object({
+  selectedRepos: z.array(z.object({
+    id: z.union([z.string(), z.number()]).transform(String),
+    name: z.string().trim().min(1).max(1024),
+    description: z.string().max(4096).nullish(),
+    tags: z.array(z.string().max(64)).max(100).optional(),
+    entities: z.array(syncEntitySchema).min(1).max(6).optional(),
+    branch: z.string().trim().min(1).max(255).optional(),
+    visibility: z.enum(["private", "public", "internal"]).optional(),
+    web_url: z.string().url().optional()
+  }).strict()).max(1000),
+  targetProviderIds: z.array(z.string().uuid()).min(1).max(50),
+  entities: z.array(syncEntitySchema).min(1).max(6).optional()
+}).strict();
+
+function parseRequestBody<T extends z.ZodTypeAny>(
+  schema: T,
+  req: express.Request,
+  res: express.Response
+): z.output<T> | null {
+  const result = schema.safeParse(req.body);
+  if (result.success) return result.data;
+  res.status(422).json({
+    error: "Request validation failed",
+    details: result.error.issues.map(issue => ({
+      path: issue.path.join("."),
+      message: issue.message
+    }))
+  });
+  return null;
+}
 
 // Encryption Helper
-const MASTER_KEY = process.env.HYDROZOA_MASTER_KEY || "default-secret-key-32-chars-long!!";
+const MASTER_KEY = securityConfig.masterKey;
 const ALGORITHM = "aes-256-gcm";
 
 // Console Styling Helpers
@@ -138,13 +212,25 @@ async function initDb() {
 
       CREATE TABLE IF NOT EXISTS dlq_items (
         id TEXT PRIMARY KEY,
+        sync_matrix_id TEXT,
         source_repo TEXT NOT NULL,
         target_node TEXT NOT NULL,
+        target_provider_id TEXT,
         error_code TEXT NOT NULL,
         error_message TEXT NOT NULL,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         status TEXT DEFAULT 'pending'
       );
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dlq_items' AND column_name='sync_matrix_id') THEN
+          ALTER TABLE dlq_items ADD COLUMN sync_matrix_id TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='dlq_items' AND column_name='target_provider_id') THEN
+          ALTER TABLE dlq_items ADD COLUMN target_provider_id TEXT;
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS logs (
         id SERIAL PRIMARY KEY,
@@ -187,6 +273,13 @@ async function initDb() {
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS webhook_deliveries (
+        provider_id TEXT NOT NULL,
+        delivery_id TEXT NOT NULL,
+        received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (provider_id, delivery_id)
+      );
+
     `);
 
     // Seed default settings if not exists
@@ -198,7 +291,12 @@ async function initDb() {
     // Seed default user if not exists
     const userCheck = await pool.query('SELECT * FROM users WHERE email = $1', ["admin@hydrozoa.io"]);
     if (userCheck.rows.length === 0) {
-      const passwordHash = bcrypt.hashSync("hydrozoa-default", 10);
+      const bootstrapPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD
+        || (securityConfig.isProduction ? "" : "hydrozoa-default");
+      if (bootstrapPassword.length < 12) {
+        throw new Error("BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters when creating the initial administrator");
+      }
+      const passwordHash = bcrypt.hashSync(bootstrapPassword, 12);
       await pool.query(
         'INSERT INTO users (email, password_hash, name, is_default_password) VALUES ($1, $2, $3, $4)',
         ["admin@hydrozoa.io", passwordHash, "Hydrozoa Admin", true]
@@ -220,12 +318,22 @@ async function initDb() {
       }
       sysLog.success("Stuck sync operations reset to pending.");
     }
+
+    await pool.query(`
+      DELETE FROM logs
+      WHERE timestamp < NOW() - (
+        SELECT make_interval(days => log_retention_days)
+        FROM system_settings
+        WHERE id = 1
+      )
+    `);
+    await pool.query("DELETE FROM api_metrics WHERE timestamp < NOW() - INTERVAL '30 days'");
+    await pool.query("DELETE FROM webhook_deliveries WHERE received_at < NOW() - INTERVAL '30 days'");
   } catch (err) {
     sysLog.error(`Database initialization failed: ${err}`);
+    throw err;
   }
 }
-
-initDb();
 
 // Database Query Helper
 const query = async (text: string, params?: any[]) => {
@@ -272,6 +380,69 @@ async function trackedFetch(providerId: string, url: string, options: any) {
   } catch (err) {
     throw err;
   }
+}
+
+function getLinkNextUrl(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(",")) {
+    const match = part.match(/<([^>]+)>\s*;\s*rel="?next"?/i);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+async function fetchProviderCollection(
+  providerId: string,
+  initialUrl: string,
+  headers: Record<string, string>,
+  maxPages = 100
+): Promise<any[]> {
+  const items: any[] = [];
+  let nextUrl: string | null = initialUrl;
+  const visited = new Set<string>();
+
+  for (let pageCount = 0; nextUrl && pageCount < maxPages; pageCount++) {
+    if (visited.has(nextUrl)) throw new Error(`Provider pagination loop detected for ${new URL(nextUrl).pathname}`);
+    visited.add(nextUrl);
+
+    const response = await trackedFetch(providerId, nextUrl, { headers });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Provider collection request failed (${response.status}): ${detail.substring(0, 1000)}`);
+    }
+    const data = await response.json();
+    const pageItems = Array.isArray(data) ? data : Array.isArray(data?.values) ? data.values : [];
+    items.push(...pageItems);
+
+    nextUrl = typeof data?.next === "string"
+      ? data.next
+      : getLinkNextUrl(response.headers.get("link"));
+
+    if (!nextUrl) {
+      const gitLabNextPage = response.headers.get("x-next-page");
+      if (gitLabNextPage) {
+        const url = new URL(initialUrl);
+        url.searchParams.set("page", gitLabNextPage);
+        nextUrl = url.toString();
+      }
+    }
+
+    if (!nextUrl && pageItems.length > 0) {
+      const current = new URL(initialUrl);
+      const pageSizeText = current.searchParams.get("per_page")
+        || current.searchParams.get("limit")
+        || current.searchParams.get("pagelen");
+      const pageSize = pageSizeText ? Number.parseInt(pageSizeText, 10) : 0;
+      if (pageSize > 0 && pageItems.length === pageSize) {
+        const nextPage = Number.parseInt(current.searchParams.get("page") || "1", 10) + pageCount + 1;
+        current.searchParams.set("page", String(nextPage));
+        nextUrl = current.toString();
+      }
+    }
+  }
+
+  if (nextUrl) throw new Error(`Provider pagination exceeded the ${maxPages}-page safety limit`);
+  return items;
 }
 
 function encrypt(text: string) {
@@ -549,13 +720,12 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
 
 // JWT Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  const token = getRequestToken(req, securityConfig.authCookieName);
 
-  if (!token) return res.sendStatus(401);
+  if (!token) return res.status(401).json({ error: "Authentication required" });
 
   jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-    if (err) return res.sendStatus(403);
+    if (err) return res.status(401).json({ error: "Session is invalid or expired" });
     req.user = user;
     next();
   });
@@ -563,7 +733,7 @@ const authenticateToken = (req: any, res: any, next: any) => {
 
 // --- Sync Engine ---
 
-async function getAuthUrl(provider: any, token: string, repoName: string) {
+function getGitRemote(provider: any, token: string, repoName: string) {
   const type = provider.type.toLowerCase();
   let baseUrl = provider.url.replace(/\/$/, '').replace(/^https?:\/\//, '');
   
@@ -574,32 +744,51 @@ async function getAuthUrl(provider: any, token: string, repoName: string) {
     baseUrl = 'bitbucket.org';
   }
   
-  if (type === 'github') return `https://x-access-token:${token}@${baseUrl}/${repoName}.git`;
-  if (type.includes('gitlab')) return `https://oauth2:${token}@${baseUrl}/${repoName}.git`;
-  if (type === 'bitbucket') return `https://x-token-auth:${token}@${baseUrl}/${repoName}.git`;
-  // Default for Gitea/Forgejo/Gogs
-  return `https://${token}@${baseUrl}/${repoName}.git`;
+  const username = type === "github"
+    ? "x-access-token"
+    : type.includes("gitlab")
+      ? "oauth2"
+      : type === "bitbucket"
+        ? "x-token-auth"
+        : token;
+
+  return {
+    url: `https://${baseUrl}/${repoName}.git`,
+    credentials: {
+      username,
+      password: type === "gitea" || type === "forgejo" || type === "gogs" ? "" : token
+    }
+  };
 }
 
 async function syncCode(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
-  const tmpDir = path.join(os.tmpdir(), `hydrozoa-${crypto.randomUUID()}`);
-  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpRoot = path.join(os.tmpdir(), `hydrozoa-${crypto.randomUUID()}`);
+  const mirrorDir = path.join(tmpRoot, "mirror.git");
+  fs.mkdirSync(tmpRoot, { recursive: true, mode: 0o700 });
 
   try {
-    const sourceUrl = await getAuthUrl(source, sourceToken, repoName);
-    const targetUrl = await getAuthUrl(target, targetToken, repoName);
+    const sourceRemote = getGitRemote(source, sourceToken, repoName);
+    const targetRemote = getGitRemote(target, targetToken, repoName);
 
     sysLog.info(`Mirroring code: ${repoName} -> ${target.name}`);
     
     try {
       sysLog.info(`Cloning from source: ${repoName}...`);
-      await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`, { maxBuffer: 1024 * 1024 * 50 });
+      await runGit(["clone", "--mirror", sourceRemote.url, mirrorDir], {
+        askPassDirectory: tmpRoot,
+        credentials: sourceRemote.credentials
+      });
       sysLog.info(`Successfully cloned ${repoName}. Pushing to target...`);
-      await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`, { maxBuffer: 1024 * 1024 * 50 });
+      await runGit(["push", "--mirror", targetRemote.url], {
+        cwd: mirrorDir,
+        askPassDirectory: tmpRoot,
+        credentials: targetRemote.credentials
+      });
       sysLog.success(`Code sync successful for ${repoName} -> ${target.name}`);
     } catch (gitErr: any) {
-      sysLog.error(`Git operation failed for ${repoName}: ${gitErr.message}`);
-      throw gitErr;
+      const safeMessage = redactSensitiveText(gitErr.message, [sourceToken, targetToken]);
+      sysLog.error(`Git operation failed for ${repoName}: ${safeMessage}`);
+      throw new Error(safeMessage);
     }
     
     return true;
@@ -607,7 +796,7 @@ async function syncCode(source: any, target: any, repoName: string, sourceToken:
     sysLog.error(`Code sync failed for ${repoName}: ${err.message}`);
     throw err;
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 }
 
@@ -621,7 +810,6 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
   try {
-    let sourceIssues = [];
     const sourcePath = source.type.toLowerCase().includes("gitlab")
       ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
       : source.type.toLowerCase() === "github"
@@ -630,15 +818,10 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
           ? `${sourceBase}/2.0/repositories/${repoName}/issues?pagelen=100`
           : `${sourceBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
 
-    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
-    if (resSource.ok) {
-      const data = await resSource.json();
-      sourceIssues = Array.isArray(data) ? data : (data.values || []);
-    }
+    const sourceIssues = await fetchProviderCollection(source.id, sourcePath, headersSource);
 
     if (!Array.isArray(sourceIssues)) return false;
 
-    let targetIssues = [];
     const targetPath = target.type.toLowerCase().includes("gitlab")
       ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
       : target.type.toLowerCase() === "github"
@@ -647,11 +830,7 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
           ? `${targetBase}/2.0/repositories/${repoName}/issues?pagelen=100`
           : `${targetBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
 
-    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
-    if (resTarget.ok) {
-      const data = await resTarget.json();
-      targetIssues = Array.isArray(data) ? data : (data.values || []);
-    }
+    const targetIssues = await fetchProviderCollection(target.id, targetPath, headersTarget);
 
     const existingTitles = new Set(targetIssues.map((i: any) => i.title));
     let created = 0;
@@ -675,7 +854,7 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
       if (Array.isArray(issue.labels)) {
         labels = issue.labels.map((l: any) => typeof l === 'string' ? l : (l.name || l.title));
       } else if (typeof issue.labels === 'string') {
-        labels = issue.labels.split(',').map(s => s.trim());
+        labels = issue.labels.split(',').map((label: string) => label.trim());
       }
 
       if (existingTitles.has(title)) {
@@ -735,7 +914,7 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
     return true;
   } catch (err) {
     sysLog.error(`Issue sync failed for ${repoName}: ${err}`);
-    return false;
+    throw err;
   }
 }
 
@@ -751,7 +930,6 @@ async function syncMilestones(source: any, target: any, repoName: string, source
   const milestoneMap: Record<string, any> = {};
 
   try {
-    let sourceMilestones = [];
     const sourcePath = source.type.toLowerCase().includes("gitlab")
       ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
       : source.type.toLowerCase() === "github"
@@ -760,15 +938,10 @@ async function syncMilestones(source: any, target: any, repoName: string, source
           ? `${sourceBase}/2.0/repositories/${repoName}/issues/milestones?pagelen=100`
           : `${sourceBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
 
-    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
-    if (resSource.ok) {
-      const data = await resSource.json();
-      sourceMilestones = Array.isArray(data) ? data : (data.values || []);
-    }
+    const sourceMilestones = await fetchProviderCollection(source.id, sourcePath, headersSource);
 
     if (!Array.isArray(sourceMilestones)) return {};
 
-    let targetMilestones = [];
     const targetPath = target.type.toLowerCase().includes("gitlab")
       ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
       : target.type.toLowerCase() === "github"
@@ -777,11 +950,7 @@ async function syncMilestones(source: any, target: any, repoName: string, source
           ? `${targetBase}/2.0/repositories/${repoName}/issues/milestones?pagelen=100`
           : `${targetBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
 
-    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
-    if (resTarget.ok) {
-      const data = await resTarget.json();
-      targetMilestones = Array.isArray(data) ? data : (data.values || []);
-    }
+    const targetMilestones = await fetchProviderCollection(target.id, targetPath, headersTarget);
 
     // Map existing target milestones
     targetMilestones.forEach((m: any) => {
@@ -846,7 +1015,7 @@ async function syncMilestones(source: any, target: any, repoName: string, source
     return milestoneMap;
   } catch (err) {
     sysLog.error(`Milestone sync failed for ${repoName}: ${err}`);
-    return milestoneMap;
+    throw err;
   }
 }
 async function syncReleases(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
@@ -859,7 +1028,6 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
   try {
-    let sourceReleases = [];
     const sourcePath = source.type.toLowerCase().includes("gitlab")
       ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases?per_page=100`
       : source.type.toLowerCase() === "github"
@@ -868,15 +1036,10 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
           ? `${sourceBase}/2.0/repositories/${repoName}/refs/tags?pagelen=100`
           : `${sourceBase}/api/v1/repos/${repoName}/releases?per_page=100`;
 
-    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
-    if (resSource.ok) {
-      const data = await resSource.json();
-      sourceReleases = Array.isArray(data) ? data : (data.values || []);
-    }
+    const sourceReleases = await fetchProviderCollection(source.id, sourcePath, headersSource);
 
     if (!Array.isArray(sourceReleases)) return false;
 
-    let targetReleases = [];
     const targetPath = target.type.toLowerCase().includes("gitlab")
       ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/releases?per_page=100`
       : target.type.toLowerCase() === "github"
@@ -885,11 +1048,7 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
           ? `${targetBase}/2.0/repositories/${repoName}/refs/tags?pagelen=100`
           : `${targetBase}/api/v1/repos/${repoName}/releases?per_page=100`;
 
-    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
-    if (resTarget.ok) {
-      const data = await resTarget.json();
-      targetReleases = Array.isArray(data) ? data : (data.values || []);
-    }
+    const targetReleases = await fetchProviderCollection(target.id, targetPath, headersTarget);
 
     const existingTags = new Set(targetReleases.map((r: any) => r.tag_name));
     let created = 0;
@@ -1002,7 +1161,7 @@ async function syncReleases(source: any, target: any, repoName: string, sourceTo
     return true;
   } catch (err) {
     sysLog.error(`Release sync failed for ${repoName}: ${err}`);
-    return false;
+    throw err;
   }
 }
 
@@ -1016,7 +1175,6 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
   try {
-    let sourceSnippets = [];
     const sourcePath = source.type.toLowerCase().includes("gitlab")
       ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/snippets?per_page=100`
       : source.type.toLowerCase() === "github"
@@ -1025,15 +1183,10 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
           ? `${sourceBase}/2.0/repositories/${repoName}/snippets?pagelen=100`
           : `${sourceBase}/api/v1/repos/${repoName}/snippets?per_page=100`;
 
-    const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
-    if (resSource.ok) {
-      const data = await resSource.json();
-      sourceSnippets = Array.isArray(data) ? data : (data.values || []);
-    }
+    const sourceSnippets = await fetchProviderCollection(source.id, sourcePath, headersSource);
 
     if (!Array.isArray(sourceSnippets)) return false;
 
-    let targetSnippets = [];
     const targetPath = target.type.toLowerCase().includes("gitlab")
       ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/snippets?per_page=100`
       : target.type.toLowerCase() === "github"
@@ -1042,11 +1195,7 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
           ? `${targetBase}/2.0/repositories/${repoName}/snippets?pagelen=100`
           : `${targetBase}/api/v1/repos/${repoName}/snippets?per_page=100`;
 
-    const resTarget = await trackedFetch(target.id, targetPath, { headers: headersTarget });
-    if (resTarget.ok) {
-      const data = await resTarget.json();
-      targetSnippets = Array.isArray(data) ? data : (data.values || []);
-    }
+    const targetSnippets = await fetchProviderCollection(target.id, targetPath, headersTarget);
 
     const existingTitles = new Set(targetSnippets.map((s: any) => s.title || s.description || "Untitled"));
     let created = 0;
@@ -1095,31 +1244,63 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
     return true;
   } catch (err) {
     sysLog.error(`Snippet sync failed for ${repoName}: ${err}`);
-    return false;
+    throw err;
   }
 }
 
-async function processSyncItem(item: any) {
+interface SyncProcessOptions {
+  targetProviderIds?: Set<string>;
+  replayDlqId?: string;
+}
+
+async function processSyncItem(item: any, options: SyncProcessOptions = {}): Promise<boolean> {
   sysLog.info(`Processing mirror item: ${item.source_repo}`);
+  const lockClient = await pool.connect();
+  const lockKey = `sync:${item.id}`;
+  let lockAcquired = false;
+  let allTargetsSucceeded = true;
+  try {
+  const lockResult = await lockClient.query(
+    "SELECT pg_try_advisory_lock(hashtext($1)) AS acquired",
+    [lockKey]
+  );
+  lockAcquired = Boolean(lockResult.rows[0]?.acquired);
+  if (!lockAcquired) {
+    sysLog.info(`Sync already active for ${item.source_repo}; duplicate trigger ignored.`);
+    return false;
+  }
+
   // Fetch latest settings
   const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
   const settings = settingsRes.rows[0];
 
   const sourceRes = await pool.query('SELECT * FROM providers WHERE id = $1', [item.source_provider]);
   const sourceProvider = sourceRes.rows[0];
-  if (!sourceProvider) return;
+  if (!sourceProvider) return false;
 
   const sourceToken = decrypt(sourceProvider.token);
+  if (sourceToken === "DECRYPTION_FAILED") {
+    throw new Error(`Source credentials cannot be decrypted for ${sourceProvider.name}`);
+  }
   const entities = Array.isArray(item.entities) ? item.entities : ['code'];
 
   for (const targetRef of item.targets) {
-    if (targetRef.status === 'syncing') continue; // Avoid overlap
+    if (options.targetProviderIds && !options.targetProviderIds.has(targetRef.provider_id)) continue;
 
     const targetRes = await pool.query('SELECT * FROM providers WHERE id = $1', [targetRef.provider_id]);
     const targetProvider = targetRes.rows[0];
-    if (!targetProvider) continue;
+    if (!targetProvider) {
+      allTargetsSucceeded = false;
+      continue;
+    }
 
     const targetToken = decrypt(targetProvider.token);
+    if (targetToken === "DECRYPTION_FAILED") {
+      allTargetsSucceeded = false;
+      targetRef.status = "error";
+      targetRef.failure_reason = `Target credentials cannot be decrypted for ${targetProvider.name}`;
+      continue;
+    }
     const syncStart = Date.now();
     sysLog.info(`Sync starting: ${item.source_repo} -> ${targetProvider.name} (Entities: ${entities.join(', ')})`);
 
@@ -1193,11 +1374,25 @@ async function processSyncItem(item: any) {
       });
 
     } catch (err: any) {
+      allTargetsSucceeded = false;
       targetRef.status = 'error';
       targetRef.failure_reason = err.message;
       
-      await pool.query('INSERT INTO dlq_items (id, source_repo, target_node, error_code, error_message) VALUES ($1, $2, $3, $4, $5)',
-        [crypto.randomUUID(), item.source_repo, targetProvider.name, 'SYNC_FAIL', err.message]);
+      if (options.replayDlqId) {
+        await pool.query(
+          `UPDATE dlq_items
+           SET error_message = $1, timestamp = CURRENT_TIMESTAMP, status = 'pending'
+           WHERE id = $2`,
+          [err.message, options.replayDlqId]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO dlq_items
+            (id, sync_matrix_id, source_repo, target_node, target_provider_id, error_code, error_message)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [crypto.randomUUID(), item.id, item.source_repo, targetProvider.name, targetProvider.id, 'SYNC_FAIL', err.message]
+        );
+      }
         
       await addLog({
         level: "error",
@@ -1214,10 +1409,18 @@ async function processSyncItem(item: any) {
 
     await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
   }
+  return allTargetsSucceeded;
+  } finally {
+    if (lockAcquired) {
+      await lockClient.query("SELECT pg_advisory_unlock(hashtext($1))", [lockKey]).catch(() => undefined);
+    }
+    lockClient.release();
+  }
 }
 
 // Background tasks
 let isSyncing = false;
+let syncTimer: NodeJS.Timeout | null = null;
 const runSyncEngine = async () => {
   if (isSyncing) return;
   isSyncing = true;
@@ -1254,24 +1457,68 @@ const runSyncEngine = async () => {
   } finally {
     isSyncing = false;
     sysLog.info(`Sync engine cycle complete. Next run in ${syncIntervalMinutes} minutes.`);
-    setTimeout(runSyncEngine, syncIntervalMinutes * 60 * 1000);
+    syncTimer = setTimeout(runSyncEngine, syncIntervalMinutes * 60 * 1000);
   }
 };
-
-// Start the sync engine after a brief initialization delay
-setTimeout(runSyncEngine, 5000);
 
 async function startServer() {
 
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+  app.use(helmet({
+    contentSecurityPolicy: securityConfig.isProduction ? {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'", "data:"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        imgSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"]
+      }
+    } : false,
+    crossOriginEmbedderPolicy: false
+  }));
+  app.use(cookieParser());
+  app.use(express.json({
+    limit: "1mb",
+    verify: (req: any, _res, buffer) => {
+      req.rawBody = Buffer.from(buffer);
+    }
+  }));
+
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    message: { error: "Too many failed login attempts; retry later" }
+  });
+
+  app.use("/api/v1", (req, res, next) => {
+    if (["GET", "HEAD", "OPTIONS"].includes(req.method) || req.path.startsWith("/webhooks/")) {
+      next();
+      return;
+    }
+    const origin = req.headers.origin;
+    if (origin && securityConfig.appOrigin && origin !== securityConfig.appOrigin) {
+      res.status(403).json({ error: "Request origin is not allowed" });
+      return;
+    }
+    next();
+  });
 
   app.get("/health", async (req, res) => {
     try {
       await pool.query('SELECT 1');
-      const gitVersion = (await execAsync('git --version')).stdout.trim();
+      const gitVersion = (await runGit(["--version"])).trim();
       res.json({ 
         status: "UP", 
         database: "connected", 
@@ -1282,10 +1529,21 @@ async function startServer() {
       res.status(503).json({ status: "DOWN", error: err.message });
     }
   });
+  app.get("/health/live", (_req, res) => res.json({ status: "UP" }));
+  app.get("/health/ready", async (_req, res) => {
+    try {
+      await pool.query("SELECT 1");
+      res.json({ status: "READY" });
+    } catch {
+      res.status(503).json({ status: "NOT_READY" });
+    }
+  });
 
   // API Routes
-  app.post("/api/v1/auth/login", async (req, res) => {
-    const { email, password } = req.body;
+  app.post("/api/v1/auth/login", loginLimiter, async (req, res) => {
+    const body = parseRequestBody(loginSchema, req, res);
+    if (!body) return;
+    const { email, password } = body;
     
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
@@ -1303,8 +1561,8 @@ async function startServer() {
         resolution: "No action required."
       });
 
+      res.cookie(securityConfig.authCookieName, token, securityConfig.authCookieOptions);
       res.json({ 
-        token, 
         user: { 
           email, 
           name: user.name,
@@ -1325,8 +1583,37 @@ async function startServer() {
     }
   });
 
+  app.get("/api/v1/auth/session", authenticateToken, async (req, res) => {
+    const identity = (req as any).user;
+    const result = await pool.query(
+      "SELECT email, name, is_default_password FROM users WHERE email = $1",
+      [identity.email]
+    );
+    const user = result.rows[0];
+    if (!user) {
+      res.clearCookie(securityConfig.authCookieName, securityConfig.authCookieOptions);
+      res.status(401).json({ error: "Session user no longer exists" });
+      return;
+    }
+    res.json({
+      authenticated: true,
+      user: {
+        email: user.email,
+        name: user.name,
+        isDefaultPassword: user.is_default_password
+      }
+    });
+  });
+
+  app.post("/api/v1/auth/logout", authenticateToken, (_req, res) => {
+    res.clearCookie(securityConfig.authCookieName, securityConfig.authCookieOptions);
+    res.status(204).end();
+  });
+
   app.post("/api/v1/auth/reset-password", authenticateToken, async (req, res) => {
-    const { currentPassword, newPassword } = req.body;
+    const body = parseRequestBody(passwordResetSchema, req, res);
+    if (!body) return;
+    const { currentPassword, newPassword } = body;
     const email = (req as any).user.email;
     
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -1697,11 +1984,9 @@ async function startServer() {
   });
 
   app.post("/api/v1/auth/providers", authenticateToken, async (req, res) => {
-    let { name, type, url, token, isSource, baseUrl, webhookSecret } = req.body;
-    name = typeof name === 'string' ? name.trim() : name;
-    type = typeof type === 'string' ? type.trim().toLowerCase() : type;
-    token = typeof token === 'string' ? token.trim() : token;
-    webhookSecret = typeof webhookSecret === 'string' ? webhookSecret.trim() : webhookSecret;
+    const body = parseRequestBody(providerSchema, req, res);
+    if (!body) return;
+    let { name, type, url, token, isSource, baseUrl, webhookSecret } = body;
     
     // Support both 'url' and 'baseUrl' (frontend uses baseUrl)
     let effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : (type === 'bitbucket' ? 'https://api.bitbucket.org' : null));
@@ -1719,6 +2004,11 @@ async function startServer() {
     // Basic validation
     if (!name || !type || !effectiveUrl || !token) {
       return res.status(400).json({ error: "Missing required fields: name, type, url/baseUrl, and token are mandatory." });
+    }
+    try {
+      effectiveUrl = validateProviderBaseUrl(effectiveUrl);
+    } catch (error) {
+      return res.status(422).json({ error: error instanceof Error ? error.message : "Invalid provider URL" });
     }
 
     const id = crypto.randomUUID();
@@ -1789,51 +2079,63 @@ async function startServer() {
       const provider = result.rows[0];
       if (!provider) return res.status(404).json({ error: "Provider not found" });
 
-      // Verify HMAC if secret is configured
-      if (provider.webhook_secret) {
-        const secret = decrypt(provider.webhook_secret);
-        const type = provider.type.toLowerCase();
+      if (!provider.webhook_secret) {
+        return res.status(401).json({ error: "Webhook authentication is not configured for this provider" });
+      }
 
-        if (type === 'github') {
-          const signature = req.headers['x-hub-signature-256'];
-          if (!signature) {
-            sysLog.warn(`Missing signature for GitHub webhook on ${provider.name}`);
-            return res.status(401).json({ error: "Missing signature" });
-          }
-          const hmac = crypto.createHmac('sha256', secret);
-          const digest = 'sha256=' + hmac.update(JSON.stringify(req.body)).digest('hex');
-          if (signature !== digest) {
-            sysLog.error(`Invalid HMAC signature for ${provider.name}`);
-            return res.status(401).json({ error: "Invalid signature" });
-          }
-        } else if (type.includes('gitlab')) {
-          const token = req.headers['x-gitlab-token'];
-          if (token !== secret) {
-            sysLog.error(`Invalid GitLab token for ${provider.name}`);
-            return res.status(401).json({ error: "Invalid token" });
-          }
-        } else if (['gitea', 'forgejo'].includes(type)) {
-          const signature = req.headers['x-gitea-signature'];
-          if (!signature) {
-            sysLog.warn(`Missing signature for Gitea/Forgejo webhook on ${provider.name}`);
-            return res.status(401).json({ error: "Missing signature" });
-          }
-          const hmac = crypto.createHmac('sha256', secret);
-          const digest = hmac.update(JSON.stringify(req.body)).digest('hex');
-          if (signature !== digest) {
-            sysLog.error(`Invalid Gitea/Forgejo HMAC signature for ${provider.name}`);
-            return res.status(401).json({ error: "Invalid signature" });
-          }
-        } else if (type === 'bitbucket') {
-          // Bitbucket uses a secret token if configured in some versions, or just IP whitelisting.
-          // We'll implement a simple header check if secret is provided.
-          const token = req.headers['x-hook-secret'];
-          if (token && token !== secret) {
-            sysLog.error(`Invalid Bitbucket hook secret for ${provider.name}`);
-            return res.status(401).json({ error: "Invalid secret" });
-          }
+      const secret = decrypt(provider.webhook_secret);
+      if (secret === "DECRYPTION_FAILED") {
+        return res.status(500).json({ error: "Webhook secret cannot be decrypted" });
+      }
+      const type = provider.type.toLowerCase();
+      const rawBody = (req as any).rawBody as Buffer | undefined;
+      if (!rawBody) {
+        return res.status(400).json({ error: "Raw webhook body is unavailable" });
+      }
+
+      if (type === 'github') {
+        const signature = req.headers['x-hub-signature-256'];
+        const digest = 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        if (!timingSafeStringEqual(signature, digest)) {
+          sysLog.error(`Invalid HMAC signature for ${provider.name}`);
+          return res.status(401).json({ error: "Invalid signature" });
         }
-        // Add more providers as needed
+      } else if (type.includes('gitlab')) {
+        if (!timingSafeStringEqual(req.headers['x-gitlab-token'], secret)) {
+          sysLog.error(`Invalid GitLab token for ${provider.name}`);
+          return res.status(401).json({ error: "Invalid token" });
+        }
+      } else if (['gitea', 'forgejo'].includes(type)) {
+        const signature = req.headers['x-gitea-signature'];
+        const digest = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        if (!timingSafeStringEqual(signature, digest)) {
+          sysLog.error(`Invalid Gitea/Forgejo HMAC signature for ${provider.name}`);
+          return res.status(401).json({ error: "Invalid signature" });
+        }
+      } else if (type === 'bitbucket') {
+        if (!timingSafeStringEqual(req.headers['x-hook-secret'], secret)) {
+          sysLog.error(`Invalid Bitbucket hook secret for ${provider.name}`);
+          return res.status(401).json({ error: "Invalid secret" });
+        }
+      }
+
+      const deliveryHeader = type === "github"
+        ? req.headers["x-github-delivery"]
+        : type.includes("gitlab")
+          ? req.headers["x-gitlab-event-uuid"]
+          : req.headers["x-gitea-delivery"] || req.headers["x-request-uuid"];
+      const deliveryId = typeof deliveryHeader === "string"
+        ? deliveryHeader
+        : crypto.createHash("sha256").update(rawBody).digest("hex");
+      const deliveryResult = await pool.query(
+        `INSERT INTO webhook_deliveries (provider_id, delivery_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING
+         RETURNING delivery_id`,
+        [providerId, deliveryId]
+      );
+      if (deliveryResult.rowCount === 0) {
+        return res.status(202).json({ message: "Duplicate webhook ignored" });
       }
 
       // Trigger sync for all matrix items using this provider as source
@@ -1864,11 +2166,37 @@ async function startServer() {
 
   app.delete("/api/v1/auth/providers/:id", authenticateToken, async (req, res) => {
     const { id } = req.params;
-    
-    const result = await pool.query('SELECT * FROM providers WHERE id = $1', [id]);
-    const deleted = result.rows[0];
-    if (deleted) {
-      await pool.query('DELETE FROM providers WHERE id = $1', [id]);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query('SELECT * FROM providers WHERE id = $1 FOR UPDATE', [id]);
+      const deleted = result.rows[0];
+      if (!deleted) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Provider not found" });
+      }
+
+      const matrixResult = await client.query("SELECT * FROM sync_matrix FOR UPDATE");
+      for (const matrixItem of matrixResult.rows) {
+        if (matrixItem.source_provider === id) {
+          await client.query("DELETE FROM dlq_items WHERE sync_matrix_id = $1", [matrixItem.id]);
+          await client.query("DELETE FROM sync_matrix WHERE id = $1", [matrixItem.id]);
+          continue;
+        }
+        const remainingTargets = matrixItem.targets.filter((target: any) => target.provider_id !== id);
+        if (remainingTargets.length === 0) {
+          await client.query("DELETE FROM dlq_items WHERE sync_matrix_id = $1", [matrixItem.id]);
+          await client.query("DELETE FROM sync_matrix WHERE id = $1", [matrixItem.id]);
+        } else if (remainingTargets.length !== matrixItem.targets.length) {
+          await client.query("UPDATE sync_matrix SET targets = $1 WHERE id = $2", [
+            JSON.stringify(remainingTargets),
+            matrixItem.id
+          ]);
+        }
+      }
+      await client.query("DELETE FROM dlq_items WHERE target_provider_id = $1", [id]);
+      await client.query('DELETE FROM providers WHERE id = $1', [id]);
+      await client.query("COMMIT");
       await addLog({
         level: "warn",
         code: "H-PROV-DELETE",
@@ -1879,9 +2207,39 @@ async function startServer() {
         resolution: "No action required."
       });
       res.json({ message: "Provider deleted" });
-    } else {
-      res.status(404).json({ error: "Provider not found" });
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      sysLog.error(`Provider deletion failed: ${error}`);
+      res.status(500).json({ error: "Provider deletion failed" });
+    } finally {
+      client.release();
     }
+  });
+
+  app.put("/api/v1/auth/providers/:id/credentials", authenticateToken, async (req, res) => {
+    const body = parseRequestBody(providerCredentialsSchema, req, res);
+    if (!body) return;
+    const result = await pool.query("SELECT * FROM providers WHERE id = $1", [req.params.id]);
+    const provider = result.rows[0];
+    if (!provider) return res.status(404).json({ error: "Provider not found" });
+
+    const providerUser = await getProviderUser(provider, body.token);
+    if (!providerUser) {
+      return res.status(401).json({
+        error: "Provider authentication failed",
+        detail: `The ${provider.type} user API rejected these credentials. Verify token scopes and expiry.`
+      });
+    }
+
+    await pool.query(
+      "UPDATE providers SET token = $1, webhook_secret = $2 WHERE id = $3",
+      [
+        encrypt(body.token),
+        body.webhookSecret ? encrypt(body.webhookSecret) : provider.webhook_secret,
+        provider.id
+      ]
+    );
+    res.json({ message: "Provider credentials rotated", providerUser });
   });
 
   app.get("/api/v1/system/ping/:id", authenticateToken, async (req, res) => {
@@ -1891,21 +2249,17 @@ async function startServer() {
       const provider = result.rows[0];
       if (!provider) return res.status(404).json({ error: "Provider not found" });
 
-      const start = Date.now();
-      const type = provider.type.toLowerCase();
-      let baseUrl = provider.url.replace(/\/$/, '');
-      if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
-        baseUrl = 'https://api.github.com';
+      const token = decrypt(provider.token);
+      if (token === "DECRYPTION_FAILED") {
+        return res.status(500).json({ latency: "error", status: "credentials-unreadable" });
       }
-      
-      // Simple HEAD request to check reachability
-      const pingRes = await trackedFetch(provider.id, baseUrl, { 
-        method: 'HEAD',
-        headers: { 'User-Agent': 'Hydrozoa-Mirror-Agent' }
-      });
-      
+      const start = Date.now();
+      const providerUser = await getProviderUser(provider, token);
       const latency = Date.now() - start;
-      res.json({ latency: `${latency}ms`, status: pingRes.ok ? "healthy" : "unstable" });
+      res.json({
+        latency: `${latency}ms`,
+        status: providerUser ? "healthy" : "authentication-failed"
+      });
     } catch (err) {
       res.json({ latency: "timeout", status: "offline" });
     }
@@ -1958,7 +2312,9 @@ async function startServer() {
 
   app.patch("/api/v1/system/sync-matrix/:id", authenticateToken, async (req, res) => {
     const { id } = req.params;
-    const { entities, sync_interval, branch } = req.body;
+    const body = parseRequestBody(syncMatrixPatchSchema, req, res);
+    if (!body) return;
+    const { entities, sync_interval, branch } = body;
     
     try {
       const result = await pool.query('SELECT * FROM sync_matrix WHERE id = $1', [id]);
@@ -1991,22 +2347,68 @@ async function startServer() {
     }
   });
 
+  app.delete("/api/v1/system/sync-matrix/:id", authenticateToken, async (req, res) => {
+    const sourceProvider = await pool.query("SELECT id FROM providers WHERE is_source = true");
+    const sourceProviderId = sourceProvider.rows[0]?.id;
+    if (!sourceProviderId) {
+      return res.status(409).json({ error: "No source provider is configured" });
+    }
+    const result = await pool.query(
+      "DELETE FROM sync_matrix WHERE id = $1 AND source_provider = $2 RETURNING id, source_repo",
+      [req.params.id, sourceProviderId]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Sync item not found for the active source provider" });
+    }
+    await pool.query("DELETE FROM dlq_items WHERE sync_matrix_id = $1", [req.params.id]);
+    res.json({ message: "Mirror decommissioned", item: result.rows[0] });
+  });
+
   app.post("/api/v1/system/dlq/:id/replay", authenticateToken, async (req, res) => {
     const { id } = req.params;
     const result = await pool.query('SELECT * FROM dlq_items WHERE id = $1', [id]);
     const item = result.rows[0];
     if (item) {
-      await pool.query('DELETE FROM dlq_items WHERE id = $1', [id]);
+      if (!item.sync_matrix_id || !item.target_provider_id) {
+        return res.status(409).json({
+          error: "Legacy DLQ item cannot be replayed automatically",
+          detail: "Remove this item after verifying the mirror and trigger a manual sync."
+        });
+      }
+      const matrixResult = await pool.query("SELECT * FROM sync_matrix WHERE id = $1", [item.sync_matrix_id]);
+      const matrixItem = matrixResult.rows[0];
+      if (!matrixItem) {
+        return res.status(409).json({ error: "The source sync configuration no longer exists" });
+      }
+      await pool.query("UPDATE dlq_items SET status = 'replaying' WHERE id = $1", [id]);
+      const targets = matrixItem.targets.map((target: any) =>
+        target.provider_id === item.target_provider_id
+          ? { ...target, status: "pending", progress: 0 }
+          : target
+      );
+      await pool.query("UPDATE sync_matrix SET targets = $1 WHERE id = $2", [JSON.stringify(targets), matrixItem.id]);
+
+      processSyncItem(
+        { ...matrixItem, targets },
+        { targetProviderIds: new Set([item.target_provider_id]), replayDlqId: id }
+      ).then(async succeeded => {
+        if (succeeded) await pool.query("DELETE FROM dlq_items WHERE id = $1", [id]);
+      }).catch(async error => {
+        await pool.query(
+          "UPDATE dlq_items SET status = 'pending', error_message = $1, timestamp = CURRENT_TIMESTAMP WHERE id = $2",
+          [error instanceof Error ? error.message : String(error), id]
+        );
+      });
       await addLog({
         level: "info",
         code: "H-DLQ-REPLAY",
-        provider: item.target_provider,
+        provider: item.target_provider_id,
         message: `Replay initiated for DLQ item: ${item.id}`,
-        technical_context: `Replaying sync for ${item.repository_id} -> ${item.target_provider}`,
-        ui_message: `Replaying failed sync for ${item.repository_id}`,
+        technical_context: `Replaying sync for ${item.source_repo} -> ${item.target_node}`,
+        ui_message: `Replaying failed sync for ${item.source_repo}`,
         resolution: "Monitoring replay progress."
       });
-      res.status(200).json({ message: "Replay initiated" });
+      res.status(202).json({ message: "Replay initiated" });
     } else {
       res.status(404).json({ error: "Item not found" });
     }
@@ -2046,7 +2448,9 @@ async function startServer() {
   });
 
   app.post("/api/v1/source/selection", authenticateToken, async (req, res) => {
-    const { selectedRepos, targetProviderIds, entities } = req.body;
+    const body = parseRequestBody(sourceSelectionSchema, req, res);
+    if (!body) return;
+    const { selectedRepos, targetProviderIds, entities } = body;
     const selectedRepoDetails = selectedRepos.map((repo: any) => {
       return {
         id: repo.id,
@@ -2062,84 +2466,117 @@ async function startServer() {
 
     const sourceProviderRes = await pool.query('SELECT * FROM providers WHERE is_source = true');
     const sourceProvider = sourceProviderRes.rows[0];
-    const sourceProviderId = sourceProvider ? sourceProvider.id : 'unknown';
-
-    // Remove any items from sync_matrix that were deselected
-    if (sourceProviderId !== 'unknown') {
-      const currentSyncsRes = await pool.query('SELECT source_repo FROM sync_matrix WHERE source_provider = $1', [sourceProviderId]);
-      const selectedRepoNames = selectedRepoDetails.map(r => r.name);
-      
-      for (const row of currentSyncsRes.rows) {
-        if (!selectedRepoNames.includes(row.source_repo)) {
-          sysLog.info(`Removing deselected repository from sync matrix: ${row.source_repo}`);
-          await pool.query('DELETE FROM sync_matrix WHERE source_repo = $1 AND source_provider = $2', [row.source_repo, sourceProviderId]);
-        }
-      }
+    if (!sourceProvider) {
+      return res.status(409).json({ error: "No source provider is configured" });
+    }
+    const sourceProviderId = sourceProvider.id;
+    if (targetProviderIds.includes(sourceProviderId)) {
+      return res.status(422).json({ error: "The source provider cannot also be selected as a mirror target" });
     }
 
-    const provisionSummary = [];
+    const selectedRepoNames = selectedRepoDetails.map(repo => repo.name);
+    const provisionSummary: Array<{ provider: string; providerId: string; repo: string; status: string; message: string }> = [];
 
     for (const providerId of targetProviderIds) {
       const result = await pool.query('SELECT * FROM providers WHERE id = $1', [providerId]);
       const provider = result.rows[0];
 
-      if (!provider) continue;
+      if (!provider) {
+        return res.status(422).json({ error: `Target provider ${providerId} does not exist` });
+      }
 
       const decryptedToken = decrypt(provider.token);
+      if (decryptedToken === "DECRYPTION_FAILED") {
+        provisionSummary.push({
+          provider: provider.name,
+          providerId,
+          repo: "*",
+          status: "failed",
+          message: "Target credentials cannot be decrypted"
+        });
+        continue;
+      }
 
       for (const repo of selectedRepoDetails) {
         const provisionResult = await provisionTargetRepository(provider, repo.name, repo.description, decryptedToken, repo.web_url, repo.visibility);
 
         provisionSummary.push({
           provider: provider.name,
+          providerId,
           repo: repo.name,
           status: provisionResult.status,
           message: provisionResult.message
         });
+      }
+    }
 
-        if (provisionResult.status !== 'failed') {
-          // Add to sync matrix if not already there
-          const existingSyncRes = await pool.query('SELECT * FROM sync_matrix WHERE source_repo = $1', [repo.name]);
-          const existingSync = existingSyncRes.rows[0];
-
-          if (existingSync) {
-            const targets = existingSync.targets;
-            if (!targets.find((t: any) => t.provider_id === providerId)) {
-              targets.push({
-                provider_id: providerId,
-                status: 'pending',
-                last_sync: new Date().toISOString(),
-                bytes_transferred: "0B",
-                progress: 0
-              });
-              await pool.query('UPDATE sync_matrix SET targets = $1, entities = $2, branch = $3 WHERE id = $4', [JSON.stringify(targets), JSON.stringify(repo.entities), repo.branch, existingSync.id]);
-            }
-          } else {
-            const newSync = {
-              id: `sm-${crypto.randomUUID().slice(0, 8)}`,
-              source_repo: repo.name,
-              source_provider: sourceProviderId,
-              branch: repo.branch,
-              last_commit: "initial",
-              sync_interval: 15,
-              last_sync_duration: "0s",
-              success_rate: 100,
-              targets: [{
-                provider_id: providerId,
-                status: 'pending',
-                last_sync: new Date().toISOString(),
-                bytes_transferred: "0B",
-                progress: 0
-              }],
-              entities: repo.entities
-            };
-            await pool.query(
-              'INSERT INTO sync_matrix (id, source_repo, source_provider, branch, last_commit, sync_interval, last_sync_duration, success_rate, targets, entities) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
-              [newSync.id, newSync.source_repo, newSync.source_provider, newSync.branch, newSync.last_commit, newSync.sync_interval, newSync.last_sync_duration, newSync.success_rate, JSON.stringify(newSync.targets), JSON.stringify(newSync.entities)]
-            );
-          }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const currentSyncsRes = await client.query(
+        "SELECT * FROM sync_matrix WHERE source_provider = $1 FOR UPDATE",
+        [sourceProviderId]
+      );
+      for (const row of currentSyncsRes.rows) {
+        if (!selectedRepoNames.includes(row.source_repo)) {
+          await client.query("DELETE FROM dlq_items WHERE sync_matrix_id = $1", [row.id]);
+          await client.query("DELETE FROM sync_matrix WHERE id = $1 AND source_provider = $2", [row.id, sourceProviderId]);
         }
       }
+
+      for (const repo of selectedRepoDetails) {
+        const existingSync = currentSyncsRes.rows.find(row => row.source_repo === repo.name);
+        const existingTargets = new Map((existingSync?.targets || []).map((target: any) => [target.provider_id, target]));
+        const successfulTargetIds = targetProviderIds.filter(providerId =>
+          provisionSummary.some(result =>
+            result.providerId === providerId
+            && result.repo === repo.name
+            && result.status !== "failed"
+          )
+        );
+        const targets = successfulTargetIds.map(providerId => existingTargets.get(providerId) || ({
+          provider_id: providerId,
+          status: "pending",
+          last_sync: null,
+          bytes_transferred: "0B",
+          progress: 0
+        }));
+
+        if (targets.length === 0) {
+          if (existingSync) {
+            await client.query("DELETE FROM dlq_items WHERE sync_matrix_id = $1", [existingSync.id]);
+            await client.query("DELETE FROM sync_matrix WHERE id = $1", [existingSync.id]);
+          }
+          continue;
+        }
+
+        if (existingSync) {
+          await client.query(
+            "UPDATE sync_matrix SET targets = $1, entities = $2, branch = $3 WHERE id = $4",
+            [JSON.stringify(targets), JSON.stringify(repo.entities), repo.branch, existingSync.id]
+          );
+        } else {
+          await client.query(
+            `INSERT INTO sync_matrix
+              (id, source_repo, source_provider, branch, last_commit, sync_interval, last_sync_duration, success_rate, targets, entities)
+             VALUES ($1, $2, $3, $4, 'initial', 15, '0s', 100, $5, $6)`,
+            [
+              `sm-${crypto.randomUUID().slice(0, 8)}`,
+              repo.name,
+              sourceProviderId,
+              repo.branch,
+              JSON.stringify(targets),
+              JSON.stringify(repo.entities)
+            ]
+          );
+        }
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
 
     res.json({ 
@@ -2194,7 +2631,7 @@ async function startServer() {
 
     const targets = item.targets.map((t: any) => ({
       ...t,
-      status: 'syncing',
+      status: 'pending',
       progress: 0,
       last_sync: new Date().toISOString()
     }));
@@ -2227,7 +2664,9 @@ async function startServer() {
   });
 
   app.post("/api/v1/system/settings", authenticateToken, async (req, res) => {
-    const { sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy } = req.body;
+    const body = parseRequestBody(settingsSchema, req, res);
+    if (!body) return;
+    const { sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy } = body;
     try {
       await pool.query(
         `UPDATE system_settings SET 
@@ -2245,11 +2684,11 @@ async function startServer() {
         code: "H-SYS-CONFIG",
         provider: "system",
         message: "System settings updated",
-        technical_context: `Updated settings: ${JSON.stringify(req.body)}`,
+        technical_context: `Updated settings: ${JSON.stringify(body)}`,
         ui_message: "Configuration synchronized successfully.",
         resolution: "No action required."
       });
-      res.json({ message: "Settings updated", settings: req.body });
+      res.json({ message: "Settings updated", settings: body });
     } catch (err) {
       res.status(500).json({ error: "Failed to update settings" });
     }
@@ -2257,6 +2696,7 @@ async function startServer() {
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -2270,10 +2710,34 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    sysLog.startup(`Server running on http://localhost:${PORT}`);
+  return await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => {
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      sysLog.startup(`Server running on http://localhost:${PORT}`);
+      resolve(server);
+    });
+    server.once("error", reject);
   });
 }
 
 sysLog.info("Calling startServer...");
-startServer();
+async function bootstrap() {
+  await initDb();
+  const server = await startServer();
+  syncTimer = setTimeout(runSyncEngine, 5000);
+  const shutdown = (signal: string) => {
+    sysLog.info(`${signal} received; draining HTTP and database connections.`);
+    if (syncTimer) clearTimeout(syncTimer);
+    server.close(async () => {
+      await pool.end().catch(() => undefined);
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 30_000).unref();
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
+}
+
+bootstrap().catch((error) => {
+  sysLog.error(`Hydrozoa startup failed: ${error instanceof Error ? error.message : error}`);
+  pool.end().catch(() => undefined).finally(() => process.exit(1));
+});

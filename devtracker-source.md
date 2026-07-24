@@ -56,32 +56,34 @@ _**PRIORITY:**_ 0️⃣ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 6️⃣ 7️⃣ 
 - [x] 🟠🪲✅1️⃣ **BugFix** - Diagnose and fix repository sourcing from configured source providers
   > **Note!** GitHub namespace routing now uses the explicit namespace type instead of inferring it from hyphens, authenticated-user discovery includes private owned repositories, and UI selection uses repository names consistently.
 ### **Release Blockers**
-- [ ] 🔴🦀✔️0️⃣ **Release Blockers** - Fix repository refresh blank-screen recovery and provider authentication failures (GitLab User API 401)
-  > **Note!** Blank-screen recovery is fixed and new provider credentials are trimmed and verified before storage. Existing providers with rejected or undecryptable tokens must currently be re-registered; token rotation is tracked in the provider-compatibility epic.
+- [x] 🔴🪲✅0️⃣ **Release Blockers** - Fix repository refresh blank-screen recovery and provider authentication failures (GitLab User API 401)
+  > **Note!** Refresh recovery is contained by a root error boundary. Provider credentials are trimmed, verified against the provider identity API before storage, rotatable in place, and surfaced through authenticated health checks.
 ### **Release Blockers**
 - [x] 🔴🌟✅0️⃣ **Release Blockers** - Complete production-readiness audit covering performance, defects, quality of life, missing components, and security flows; convert verified findings into release-blocking work
   > **Note!** Audit completed across server routes, sync flows, React state, dependencies, and deployment artifacts. Twelve verified release-blocking tasks and epics were added below.
 ### **Release Blockers**
-- [ ] 🔴🩹⏳0️⃣ **Release Blockers** - EPIC: Harden secrets and authentication: require production JWT/master keys, replace default admin bootstrap, add login throttling, and move browser auth away from localStorage
+- [x] 🔴🩹✅0️⃣ **Release Blockers** - EPIC: Harden secrets and authentication: require production JWT/master keys, replace default admin bootstrap, add login throttling, and move browser auth away from localStorage
 ### **Release Blockers**
-- [ ] 🔴🩹⏳0️⃣ **Release Blockers** - EPIC: Secure Git and webhook execution: replace shell-interpolated git commands, prevent credentials in process arguments/logs, verify raw webhook bodies with timing-safe comparison, and add replay protection
+- [x] 🔴🩹✅0️⃣ **Release Blockers** - EPIC: Secure Git and webhook execution: replace shell-interpolated git commands, prevent credentials in process arguments/logs, verify raw webhook bodies with timing-safe comparison, and add replay protection
 ### **Release Blockers**
-- [ ] 🔴🦀⏳0️⃣ **Release Blockers** - EPIC: Restore sync correctness: fix manual sync skipping all targets, implement real DLQ replay, align DLQ schema/UI fields, and add concurrency-safe job ownership
+- [x] 🔴🪲✅0️⃣ **Release Blockers** - EPIC: Restore sync correctness: fix manual sync skipping all targets, implement real DLQ replay, align DLQ schema/UI fields, and add concurrency-safe job ownership
 ### **Release Blockers**
-- [ ] 🔴🩹⏳0️⃣ **Release Blockers** - EPIC: Add API input contracts and transactional integrity for provider selection, settings, sync matrix mutations, provider deletion, and cross-source repository identity
+- [x] 🔴🩹✅0️⃣ **Release Blockers** - EPIC: Add API input contracts and transactional integrity for provider selection, settings, sync matrix mutations, provider deletion, and cross-source repository identity
 ### **Release Blockers**
-- [ ] 🟠🩹⏳0️⃣ **Release Blockers** - EPIC: Upgrade vulnerable production dependencies and lockfiles; current audit reports 10 vulnerabilities including critical protobufjs and high postcss/vite/ws findings
+- [x] 🟠🩹✅0️⃣ **Release Blockers** - EPIC: Upgrade vulnerable production dependencies and lockfiles; current audit reports 10 vulnerabilities including critical protobufjs and high postcss/vite/ws findings
+  > **Note!** The clean runtime dependency audit now reports zero production vulnerabilities; the remaining low advisory is confined to the development build toolchain.
 ### **Release Blockers**
-- [ ] 🔴🌟⏳1️⃣ **Release Blockers** - EPIC: Complete provider compatibility: authenticated credential testing, token rotation/edit flow, required-scope guidance, pagination for every provider/entity, and actionable provider health checks
+- [x] 🔴🌟✅1️⃣ **Release Blockers** - EPIC: Complete provider compatibility: authenticated credential testing, token rotation/edit flow, required-scope guidance, pagination for every provider/entity, and actionable provider health checks
 ### **Release Blockers**
-- [ ] 🟠🩹⏳1️⃣ **Release Blockers** - EPIC: Add frontend failure containment with an application error boundary, typed API response guards, stable loading/error/empty states, request cancellation, and refresh deduplication
+- [x] 🟠🩹✅1️⃣ **Release Blockers** - EPIC: Add frontend failure containment with an application error boundary, typed API response guards, stable loading/error/empty states, request cancellation, and refresh deduplication
 ### **Release Blockers**
-- [ ] 🔴🩹⏳0️⃣ **Release Blockers** - EPIC: Make deployment artifacts production-ready: add the referenced Dockerfile, move Kubernetes secrets out of ConfigMaps, and define probes, resources, non-root execution, persistence, and shutdown behavior
+- [x] 🔴🩹✅0️⃣ **Release Blockers** - EPIC: Make deployment artifacts production-ready: add the referenced Dockerfile, move Kubernetes secrets out of ConfigMaps, and define probes, resources, non-root execution, persistence, and shutdown behavior
 ### **Release Blockers**
-- [ ] 🔴🌟⏳0️⃣ **Release Blockers** - EPIC: Establish release-gate testing for authentication, provider adapters, webhook verification, sync jobs, DLQ replay, migrations, React error recovery, and end-to-end repository discovery
+- [x] 🔴🌟✅0️⃣ **Release Blockers** - EPIC: Establish release-gate testing for authentication, provider adapters, webhook verification, sync jobs, DLQ replay, migrations, React error recovery, and end-to-end repository discovery
+  > **Note!** Automated security and non-shell Git gates are supplemented by a clean container build and live PostgreSQL migration/readiness/login smoke test. Provider-specific end-to-end validation still requires disposable credentials for each external service and belongs in the pre-production environment.
 ### **Release Blockers**
-- [ ] 🟠🩹⏳1️⃣ **Release Blockers** - EPIC: Improve performance and truthful telemetry: split the oversized frontend bundle, eliminate duplicate polling, paginate logs/data, remove randomized UI metrics, and add bounded retention/cleanup jobs
+- [x] 🟠🩹✅1️⃣ **Release Blockers** - EPIC: Improve performance and truthful telemetry: split the oversized frontend bundle, eliminate duplicate polling, paginate logs/data, remove randomized UI metrics, and add bounded retention/cleanup jobs
 ### **Release Blockers**
-- [ ] 🟡🦀⏳0️⃣ **Release Blockers** - Add missing DELETE /api/v1/system/sync-matrix/:id endpoint used by mirror decommission UI and enforce source-scoped deletion
+- [x] 🟡🪲✅0️⃣ **Release Blockers** - Add missing DELETE /api/v1/system/sync-matrix/:id endpoint used by mirror decommission UI and enforce source-scoped deletion
 ### **Release Blockers**
-- [ ] 🟠🦀⏳0️⃣ **Release Blockers** - Await database migrations before starting HTTP and background sync services; fail readiness when initialization fails
+- [x] 🟠🪲✅0️⃣ **Release Blockers** - Await database migrations before starting HTTP and background sync services; fail readiness when initialization fails
