@@ -1414,6 +1414,12 @@ async function startServer() {
 
     try {
       const token = decrypt(sourceProvider.token);
+      if (token === "DECRYPTION_FAILED") {
+        return res.status(500).json({
+          error: "Source provider credentials cannot be decrypted",
+          detail: "Re-register the provider using the current HYDROZOA_MASTER_KEY."
+        });
+      }
       let baseUrl = sourceProvider.url.replace(/\/$/, '');
       if (sourceProvider.type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
         baseUrl = 'https://api.github.com';
@@ -1556,6 +1562,12 @@ async function startServer() {
 
     try {
       const token = decrypt(sourceProvider.token);
+      if (token === "DECRYPTION_FAILED") {
+        return res.status(500).json({
+          error: "Source provider credentials cannot be decrypted",
+          detail: "Re-register the provider using the current HYDROZOA_MASTER_KEY."
+        });
+      }
       let baseUrl = sourceProvider.url.replace(/\/$/, '');
       if (sourceProvider.type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
         baseUrl = 'https://api.github.com';
@@ -1686,6 +1698,10 @@ async function startServer() {
 
   app.post("/api/v1/auth/providers", authenticateToken, async (req, res) => {
     let { name, type, url, token, isSource, baseUrl, webhookSecret } = req.body;
+    name = typeof name === 'string' ? name.trim() : name;
+    type = typeof type === 'string' ? type.trim().toLowerCase() : type;
+    token = typeof token === 'string' ? token.trim() : token;
+    webhookSecret = typeof webhookSecret === 'string' ? webhookSecret.trim() : webhookSecret;
     
     // Support both 'url' and 'baseUrl' (frontend uses baseUrl)
     let effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : (type === 'bitbucket' ? 'https://api.bitbucket.org' : null));
@@ -1705,9 +1721,24 @@ async function startServer() {
       return res.status(400).json({ error: "Missing required fields: name, type, url/baseUrl, and token are mandatory." });
     }
 
+    const id = crypto.randomUUID();
+    const credentialProbe = {
+      id,
+      name,
+      type,
+      url: effectiveUrl
+    };
+
+    const providerUser = await getProviderUser(credentialProbe, token);
+    if (!providerUser) {
+      return res.status(401).json({
+        error: "Provider authentication failed",
+        detail: `The ${type} user API rejected these credentials. Verify the token, API scopes, and provider URL.`
+      });
+    }
+
     const encryptedToken = encrypt(token);
     const encryptedWebhookSecret = webhookSecret ? encrypt(webhookSecret) : null;
-    const id = crypto.randomUUID();
     
     const provider = {
       id,

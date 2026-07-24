@@ -1014,9 +1014,15 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   useEffect(() => {
     if (sourceProvider && namespaces.length === 0) {
       fetchWithAuth('/api/v1/source/namespaces')
-        .then(res => res.ok ? res.json() : [])
-        .then(data => setNamespaces(Array.isArray(data) ? data : []))
-        .catch(() => setNamespaces([]));
+        .then(async res => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || data.error || 'Source discovery failed');
+          setNamespaces(Array.isArray(data) ? data : []);
+        })
+        .catch((err) => {
+          setNamespaces([]);
+          addToast('Discovery Failed', err.message || 'Could not load source namespaces.', 'error');
+        });
     }
   }, [sourceProvider, namespaces.length]);
 
@@ -1830,15 +1836,18 @@ function AppContent() {
       const res = await fetchWithAuth('/api/v1/source/refresh', {
         method: 'POST'
       });
-      if (res.ok) {
-        // Re-fetch namespaces
-        const nsRes = await fetchWithAuth('/api/v1/source/namespaces');
-        const nsData = await nsRes.json();
-        setNamespaces(nsData);
-        addToast('Discovery Complete', 'Repository cache has been refreshed from source.', 'success');
-      }
+      const refreshData = await res.json();
+      if (!res.ok) throw new Error(refreshData.detail || refreshData.error || 'Refresh request failed');
+
+      const nsRes = await fetchWithAuth('/api/v1/source/namespaces');
+      const nsData = await nsRes.json();
+      if (!nsRes.ok) throw new Error(nsData.detail || nsData.error || 'Namespace discovery failed');
+      if (!Array.isArray(nsData)) throw new Error('Provider returned an invalid namespace response');
+
+      setNamespaces(nsData);
+      addToast('Discovery Complete', 'Repository cache has been refreshed from source.', 'success');
     } catch (err) {
-      addToast('Discovery Error', 'Failed to communicate with source provider.', 'error');
+      addToast('Discovery Error', err instanceof Error ? err.message : 'Failed to communicate with source provider.', 'error');
     }
   };
 
@@ -1858,7 +1867,8 @@ function AppContent() {
         setIsAddingProvider(false);
         addToast('Node Registered', `Successfully connected ${newProvider.name} to the network.`, 'success');
       } else {
-        addToast('Registration Failed', 'Server rejected the provider credentials.', 'error');
+        const errorData = await res.json().catch(() => ({}));
+        addToast('Registration Failed', errorData.detail || errorData.error || 'Server rejected the provider credentials.', 'error');
       }
     } catch (err) {
       addToast('System Error', 'Could not register new node.', 'error');
