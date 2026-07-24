@@ -46,18 +46,25 @@ const colors = {
 
 const getTimestamp = () => `${colors.gray}[${new Date().toLocaleTimeString()}]${colors.reset}`;
 
+function redactSensitive(value: unknown): string {
+  return String(value ?? '')
+    .replace(/(https?:\/\/)([^/@\s]+)@/gi, '$1***@')
+    .replace(/\b(github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9]+|glpat-[A-Za-z0-9_-]+)\b/g, '***')
+    .replace(/((?:authorization|private-token|token|password|secret)\s*[:=]\s*)(?:bearer\s+|token\s+)?[^\s,;}"']+/gi, '$1***');
+}
+
 const sysLog = {
-  info: (msg: string) => console.log(`${getTimestamp()} ${colors.bgBlue}${colors.white} INFO ${colors.reset} ${msg}`),
-  success: (msg: string) => console.log(`${getTimestamp()} ${colors.bgGreen}${colors.white}  OK  ${colors.reset} ${msg}`),
-  warn: (msg: string) => console.log(`${getTimestamp()} ${colors.bgYellow}${colors.black} WARN ${colors.reset} ${msg}`),
-  error: (msg: string) => console.error(`${getTimestamp()} ${colors.bgRed}${colors.white} FAIL ${colors.reset} ${msg}`),
-  startup: (msg: string) => console.log(`${getTimestamp()} ${colors.magenta}${colors.bright}🚀 ${msg}${colors.reset}`),
-  debug: (msg: string) => console.log(`${getTimestamp()} ${colors.gray}${colors.dim}🔍 ${msg}${colors.reset}`)
+  info: (msg: string) => console.log(`${getTimestamp()} ${colors.bgBlue}${colors.white} INFO ${colors.reset} ${redactSensitive(msg)}`),
+  success: (msg: string) => console.log(`${getTimestamp()} ${colors.bgGreen}${colors.white}  OK  ${colors.reset} ${redactSensitive(msg)}`),
+  warn: (msg: string) => console.log(`${getTimestamp()} ${colors.bgYellow}${colors.black} WARN ${colors.reset} ${redactSensitive(msg)}`),
+  error: (msg: string) => console.error(`${getTimestamp()} ${colors.bgRed}${colors.white} FAIL ${colors.reset} ${redactSensitive(msg)}`),
+  startup: (msg: string) => console.log(`${getTimestamp()} ${colors.magenta}${colors.bright}🚀 ${redactSensitive(msg)}${colors.reset}`),
+  debug: (msg: string) => console.log(`${getTimestamp()} ${colors.gray}${colors.dim}🔍 ${redactSensitive(msg)}${colors.reset}`)
 };
 
 process.on('uncaughtException', (err) => {
   sysLog.error(`Uncaught Exception: ${err.message}`);
-  console.error(err.stack);
+  console.error(redactSensitive(err.stack));
 });
 
 process.on('unhandledRejection', (reason: any) => {
@@ -235,7 +242,15 @@ const query = async (text: string, params?: any[]) => {
 async function addLog(log: any) {
   await pool.query(
     'INSERT INTO logs (level, code, provider, message, technical_context, ui_message, resolution) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-    [log.level, log.code, log.provider, log.message, log.technical_context, log.ui_message, log.resolution]
+    [
+      log.level,
+      log.code,
+      log.provider,
+      redactSensitive(log.message),
+      redactSensitive(log.technical_context).slice(0, 5000),
+      redactSensitive(log.ui_message),
+      redactSensitive(log.resolution)
+    ]
   );
 }
 
@@ -414,19 +429,10 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
     'Content-Type': 'application/json'
   };
 
-  // Step 1: Normalize repo name and find namespace
-  let owner = "";
-  let name = repoName;
-  if (repoName.includes('/')) {
-    const parts = repoName.split('/');
-    name = parts.pop()!;
-    owner = parts.join('/');
-  }
-
-  // If no owner, get default
-  if (!owner) {
-    owner = await getProviderUser(provider, token) || "";
-  }
+  // Source namespaces belong to the source provider. Unless a target namespace
+  // mapping is explicitly configured, mirror into the authenticated target user.
+  const name = repoName.split('/').filter(Boolean).pop() || repoName;
+  const owner = await getProviderUser(provider, token) || "";
   
   const fullName = owner ? `${owner}/${name}` : name;
 
@@ -436,7 +442,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
     code: "H-TARGET-CHECK",
     provider: provider.type,
     message: `Checking if target repository '${fullName}' exists on ${provider.name}`,
-    technical_context: `Verifying existence of ${fullName} via API (Base: ${baseUrl})`,
+    technical_context: `Verifying target repository ${fullName}`,
     ui_message: `Verifying target repository on ${provider.name}`,
     resolution: "Automated check initiated."
   });
@@ -446,7 +452,17 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
     if (type === 'github') {
       headers['Authorization'] = `Bearer ${token}`;
       const res = await trackedFetch(provider.id, `${baseUrl}/repos/${fullName}`, { headers });
-      if (res.ok) exists = true;
+      if (res.ok) {
+        const repository = await res.json();
+        if (repository.permissions?.push === false) {
+          return {
+            status: 'failed',
+            message: `No write permission for ${fullName} on ${provider.name}`,
+            error: `The authenticated GitHub user cannot push to ${fullName}. Grant repository Contents read/write access or choose another target repository.`
+          };
+        }
+        exists = true;
+      }
       else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
       else if ([401, 403].includes(res.status)) {
         return { status: 'failed', message: `Auth error (${res.status}) on ${provider.name}`, error: await res.text() };
@@ -487,7 +503,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
         ui_message: `Target repository verified: ${fullName}`,
         resolution: "No creation required."
       });
-      return { status: 'exists', message: `Repository ${fullName} already exists` };
+      return { status: 'exists', message: `Repository ${fullName} already exists`, targetRepo: fullName };
     }
 
     // Step 2: Create
@@ -503,9 +519,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
 
     let createRes;
     if (type === 'github') {
-      const currentUser = await getProviderUser(provider, token);
-      const createUrl = owner === currentUser ? `${baseUrl}/user/repos` : `${baseUrl}/orgs/${owner}/repos`;
-      createRes = await trackedFetch(provider.id, createUrl, {
+      createRes = await trackedFetch(provider.id, `${baseUrl}/user/repos`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ name, description: finalDescription, private: isPrivate })
@@ -517,9 +531,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
         body: JSON.stringify({ name, path: name, visibility: visibility === 'internal' ? 'internal' : (isPrivate ? 'private' : 'public'), description: finalDescription })
       });
     } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
-      const currentUser = await getProviderUser(provider, token);
-      const createUrl = owner === currentUser ? `${baseUrl}/api/v1/user/repos` : `${baseUrl}/api/v1/org/${owner}/repos`;
-      createRes = await trackedFetch(provider.id, createUrl, {
+      createRes = await trackedFetch(provider.id, `${baseUrl}/api/v1/user/repos`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ name, description: finalDescription, private: isPrivate })
@@ -543,7 +555,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
         ui_message: `Provisioned repository: ${fullName}`,
         resolution: "Repository is now ready for mirroring."
       });
-      return { status: 'created', message: `Repository ${fullName} created` };
+      return { status: 'created', message: `Repository ${fullName} created`, targetRepo: fullName };
     } else {
       const errText = createRes ? await createRes.text() : "No response from provider";
       sysLog.error(`Provisioning failed for ${fullName} on ${provider.name}: ${errText}`);
@@ -641,31 +653,33 @@ async function getAuthUrl(provider: any, token: string, repoName: string) {
   return `https://${token}@${baseUrl}/${repoName}.git`;
 }
 
-async function syncCode(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
+async function syncCode(source: any, target: any, sourceRepoName: string, targetRepoName: string, sourceToken: string, targetToken: string) {
   const tmpDir = path.join(os.tmpdir(), `hydrozoa-${crypto.randomUUID()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
 
   try {
-    const sourceUrl = await getAuthUrl(source, sourceToken, repoName);
-    const targetUrl = await getAuthUrl(target, targetToken, repoName);
+    const sourceUrl = await getAuthUrl(source, sourceToken, sourceRepoName);
+    const targetUrl = await getAuthUrl(target, targetToken, targetRepoName);
 
-    sysLog.info(`Mirroring code: ${repoName} -> ${target.name}`);
+    sysLog.info(`Mirroring code: ${sourceRepoName} -> ${targetRepoName} on ${target.name}`);
     
     try {
-      sysLog.info(`Cloning from source: ${repoName}...`);
+      sysLog.info(`Cloning from source: ${sourceRepoName}...`);
       await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`, { maxBuffer: 1024 * 1024 * 50 });
-      sysLog.info(`Successfully cloned ${repoName}. Pushing to target...`);
+      sysLog.info(`Successfully cloned ${sourceRepoName}. Pushing to ${targetRepoName}...`);
       await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`, { maxBuffer: 1024 * 1024 * 50 });
-      sysLog.success(`Code sync successful for ${repoName} -> ${target.name}`);
+      sysLog.success(`Code sync successful for ${sourceRepoName} -> ${targetRepoName}`);
     } catch (gitErr: any) {
-      sysLog.error(`Git operation failed for ${repoName}: ${gitErr.message}`);
-      throw gitErr;
+      const safeMessage = redactSensitive(gitErr.message);
+      sysLog.error(`Git operation failed for ${sourceRepoName}: ${safeMessage}`);
+      throw new Error(safeMessage);
     }
     
     return true;
   } catch (err: any) {
-    sysLog.error(`Code sync failed for ${repoName}: ${err.message}`);
-    throw err;
+    const safeMessage = redactSensitive(err.message);
+    sysLog.error(`Code sync failed for ${sourceRepoName}: ${safeMessage}`);
+    throw new Error(safeMessage);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -1180,6 +1194,11 @@ async function processSyncItem(item: any) {
     if (!targetProvider) continue;
 
     const targetToken = decrypt(targetProvider.token);
+    const targetOwner = await getProviderUser(targetProvider, targetToken);
+    const targetRepoName = targetRef.target_repo
+      || (targetOwner
+        ? `${targetOwner}/${item.source_repo.split('/').pop()}`
+        : item.source_repo.split('/').pop());
     const syncStart = Date.now();
     sysLog.info(`Sync starting: ${item.source_repo} -> ${targetProvider.name} (Entities: ${entities.join(', ')})`);
 
@@ -1191,7 +1210,7 @@ async function processSyncItem(item: any) {
 
       if (entities.includes('code')) {
         sysLog.debug(`[${item.source_repo}] Pushing code...`);
-        await syncCode(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+        await syncCode(sourceProvider, targetProvider, item.source_repo, targetRepoName, sourceToken, targetToken);
       }
       
       let milestoneMap = {};
@@ -1519,7 +1538,7 @@ async function startServer() {
       
       if (sourceProvider.type.includes('gitlab')) {
         headers['Private-Token'] = token;
-        sysLog.info(`Fetching GitLab namespaces from: ${baseUrl}`);
+        sysLog.info("Fetching GitLab namespaces...");
 
         const userRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v4/user`, { headers });
         if (!userRes.ok) {
@@ -1547,7 +1566,7 @@ async function startServer() {
       }
 
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
-        sysLog.info(`Fetching ${sourceProvider.type} namespaces from: ${baseUrl}`);
+        sysLog.info(`Fetching ${sourceProvider.type} namespaces...`);
         const userRes = await trackedFetch(sourceProvider.id, `${baseUrl}/api/v1/user`, { headers: { 'Authorization': `token ${token}` } });
         if (!userRes.ok) {
           const errText = await userRes.text();
@@ -1633,7 +1652,7 @@ async function startServer() {
         headers['Authorization'] = `token ${token}`;
         const scope = namespaceType === 'organization' ? 'orgs' : 'users';
         const url = `${baseUrl}/${scope}/${encodeURIComponent(id)}/repos?per_page=${perPage}&page=${page}`;
-        sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
+        sysLog.info(`Fetching GitHub repositories for namespace ${id}`);
 
         const reposRes = await trackedFetch(sourceProvider.id, url, { headers });
         if (!reposRes.ok) {
@@ -1664,7 +1683,7 @@ async function startServer() {
           ? `${baseUrl}/api/v4/groups/${encodeURIComponent(namespaceId)}/projects?include_subgroups=false&per_page=${perPage}&page=${page}`
           : `${baseUrl}/api/v4/users/${encodeURIComponent(namespaceId)}/projects?per_page=${perPage}&page=${page}`;
         
-        sysLog.info(`Fetching GitLab projects for ${id} from ${url}`);
+        sysLog.info(`Fetching GitLab projects for namespace ${id}`);
 
         const reposRes = await trackedFetch(sourceProvider.id, url, { headers });
         if (!reposRes.ok) {
@@ -1677,9 +1696,11 @@ async function startServer() {
         const safeReposData = (Array.isArray(reposData) ? reposData : []).filter((project: any) => {
           const projectNamespaceId = String(project.namespace?.id ?? '');
           const projectNamespaceKind = String(project.namespace?.kind ?? '').toLowerCase();
-          return projectNamespaceId === namespaceId
-            && (isGroup ? projectNamespaceKind === 'group' : projectNamespaceKind === 'user');
+          return isGroup
+            ? projectNamespaceId === namespaceId && projectNamespaceKind === 'group'
+            : projectNamespaceKind === 'user';
         });
+        res.setHeader('X-Hydrozoa-Total', reposRes.headers.get('x-total') || String(safeReposData.length));
         
         sysLog.success(`Found ${safeReposData.length} projects for GitLab namespace ${id}`);
 
@@ -1695,7 +1716,7 @@ async function startServer() {
       if (['gitea', 'forgejo', 'gogs'].includes(sourceProvider.type)) {
         // We try organization repos first, then fall back to user repos if needed
         let url = `${baseUrl}/api/v1/orgs/${id}/repos?limit=${perPage}&page=${page}`;
-        sysLog.info(`Fetching ${sourceProvider.type} repos for ${id} from ${url}`);
+        sysLog.info(`Fetching ${sourceProvider.type} repositories for namespace ${id}`);
         let reposRes = await trackedFetch(sourceProvider.id, url, { headers: { ...headers, 'Authorization': `token ${token}` } });
         
         if (!reposRes.ok) {
@@ -1726,7 +1747,7 @@ async function startServer() {
 
       if (sourceProvider.type === 'bitbucket') {
         const url = `https://api.bitbucket.org/2.0/repositories/${id}?pagelen=${perPage}&page=${page}`;
-        sysLog.info(`Fetching Bitbucket repos for ${id} from ${url}`);
+        sysLog.info(`Fetching Bitbucket repositories for namespace ${id}`);
         const reposRes = await trackedFetch(sourceProvider.id, url, { headers: { ...headers, 'Authorization': `Bearer ${token}` } });
         if (!reposRes.ok) {
           const errText = await reposRes.text();
@@ -2291,6 +2312,7 @@ async function startServer() {
             if (!targets.find((t: any) => t.provider_id === providerId)) {
               targets.push({
                 provider_id: providerId,
+                target_repo: provisionResult.targetRepo,
                 status: 'pending',
                 last_sync: new Date().toISOString(),
                 bytes_transferred: "0B",
@@ -2310,6 +2332,7 @@ async function startServer() {
               success_rate: 100,
               targets: [{
                 provider_id: providerId,
+                target_repo: provisionResult.targetRepo,
                 status: 'pending',
                 last_sync: new Date().toISOString(),
                 bytes_transferred: "0B",

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, Component, ReactNode } from 'react';
+import React, { useEffect, useRef, useState, Component, ReactNode } from 'react';
 import Chart from 'react-apexcharts';
 import { 
   Activity, 
@@ -58,6 +58,7 @@ interface Provider {
 
 interface SyncTarget {
   provider_id: string;
+  target_repo?: string;
   status: 'synced' | 'syncing' | 'error' | 'pending';
   last_sync: string;
   bytes_transferred?: string;
@@ -997,6 +998,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   const [syncEntities, setSyncEntities] = useState<string[]>(["code"]);
   const [repoEntities, setRepoEntities] = useState<Record<string, string[]>>({});
   const [repoBranches, setRepoBranches] = useState<Record<string, string>>({});
+  const prefetchedSourceId = useRef<string | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
 
@@ -1059,11 +1061,16 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
       const res = await fetchWithAuth(`/api/v1/source/namespaces/${encodeURIComponent(nsId)}/repos?page=${page}&per_page=${perPage}&type=${encodeURIComponent(type)}`);
       const data = await res.json();
       const newRepos = Array.isArray(data) ? data : [];
+      const reportedTotal = Number(res.headers.get('X-Hydrozoa-Total'));
       
       setRepos(prev => ({ 
         ...prev, 
         [nsId]: page === 1 ? newRepos : [...(prev[nsId] || []), ...newRepos] 
       }));
+      setNamespaces(prev => prev.map(namespace => namespace.id === nsId
+        ? { ...namespace, repo_count: Number.isFinite(reportedTotal) ? reportedTotal : newRepos.length }
+        : namespace
+      ));
       setHasMoreRepos(prev => ({ ...prev, [nsId]: newRepos.length === perPage }));
       setRepoPages(prev => ({ ...prev, [nsId]: page }));
     } catch (err) {
@@ -1072,6 +1079,12 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
       setIsLoadingRepos(prev => ({ ...prev, [nsId]: false }));
     }
   };
+
+  useEffect(() => {
+    if (!sourceProvider || namespaces.length === 0 || prefetchedSourceId.current === sourceProvider.id) return;
+    prefetchedSourceId.current = sourceProvider.id;
+    Promise.allSettled(namespaces.map(namespace => fetchReposPage(namespace.id, 1, namespace.type)));
+  }, [sourceProvider?.id, namespaces.length]);
 
   const toggleNamespace = async (nsId: string) => {
     if (expandedNamespace === nsId) {
@@ -1148,10 +1161,10 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
           if (res.ok) {
             const nsRepos = await res.json();
             setRepos(prev => ({ ...prev, [ns.id]: nsRepos }));
-            nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.name));
+            nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.id));
           }
         } else {
-          repos[ns.id].forEach((r: Repository) => newSelectedRepos.add(r.name));
+          repos[ns.id].forEach((r: Repository) => newSelectedRepos.add(r.id));
         }
       }
       
