@@ -49,6 +49,8 @@ _**PRIORITY:**_ 0️⃣ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 6️⃣ 7️⃣ 
 >     - [ ] {{DIFFICULTY}} {{SCOPE}} {{COMPLETE}} {{PRIORITY}} _**SUB-TASK CATEGORY**_ - Description
 >     > _**NOTE!**_ - Note content
 
+---
+
 ## **Tasklist**
 ### **Bug Fixes**
 - [x] 🟠🪲✅1️⃣ **BugFix** - Diagnose and fix repository sourcing from configured source providers
