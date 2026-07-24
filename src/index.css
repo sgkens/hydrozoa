@@ -19,6 +19,11 @@ body {
   * {
     @apply border-white/10;
   }
+
+  :where(button, a, input, select, summary, textarea):focus-visible {
+    outline: 2px solid var(--color-cyan-accent);
+    outline-offset: 3px;
+  }
 }
 
 .glow-cyan {
@@ -48,6 +53,17 @@ body {
 @keyframes biopulse {
   0%, 100% { opacity: 0.3; filter: brightness(1); }
   50% { opacity: 0.6; filter: brightness(1.5); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Custom scrollbar */

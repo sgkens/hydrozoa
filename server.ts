@@ -132,6 +132,7 @@ async function initDb() {
         success_rate INTEGER,
         targets JSONB NOT NULL,
         entities JSONB DEFAULT '["code"]',
+        enabled BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -140,6 +141,12 @@ async function initDb() {
       BEGIN 
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sync_matrix' AND column_name='entities') THEN
           ALTER TABLE sync_matrix ADD COLUMN entities JSONB DEFAULT '["code"]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sync_matrix' AND column_name='branches') THEN
+          ALTER TABLE sync_matrix ADD COLUMN branches JSONB DEFAULT '["*"]';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sync_matrix' AND column_name='enabled') THEN
+          ALTER TABLE sync_matrix ADD COLUMN enabled BOOLEAN DEFAULT TRUE;
         END IF;
       END $$;
 
@@ -254,6 +261,23 @@ async function addLog(log: any) {
   );
 }
 
+async function enforceLogRetention(retentionDays?: number) {
+  const days = Number.isInteger(retentionDays) && Number(retentionDays) > 0
+    ? Number(retentionDays)
+    : 7;
+  await pool.query(
+    `DELETE FROM logs
+     WHERE timestamp < NOW() - ($1::text || ' days')::interval
+        OR id NOT IN (SELECT id FROM logs ORDER BY timestamp DESC LIMIT $2)`,
+    [days, MAX_LOGS]
+  );
+  await pool.query(
+    `DELETE FROM api_metrics
+     WHERE timestamp < NOW() - ($1::text || ' days')::interval`,
+    [days]
+  );
+}
+
 async function trackedFetch(providerId: string, url: string, options: any) {
   try {
     const res = await fetch(url, options);
@@ -349,6 +373,25 @@ function sanitizeForGithub(text: string): string {
   return text.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
 }
 
+function normalizeBranches(value: unknown, fallback: string[] = ['*']): string[] {
+  if (!Array.isArray(value) || value.length === 0) return fallback;
+  if (value.includes('*')) return ['*'];
+  const branches = [...new Set(value)]
+    .filter((branch): branch is string => typeof branch === 'string')
+    .map(branch => branch.trim())
+    .filter(branch =>
+      branch.length > 0 &&
+      branch.length <= 255 &&
+      /^[A-Za-z0-9._/-]+$/.test(branch) &&
+      !branch.includes('..') &&
+      !branch.includes('@{') &&
+      !branch.startsWith('-') &&
+      !branch.endsWith('/') &&
+      !branch.endsWith('.')
+    );
+  return branches.length > 0 ? branches : fallback;
+}
+
 function getProviderIdentityRequest(provider: any, token: string) {
   const type = provider.type.toLowerCase();
   let baseUrl = provider.url.replace(/\/$/, '');
@@ -394,6 +437,23 @@ async function getProviderUser(provider: any, token: string): Promise<string | n
     sysLog.error(`Error fetching user for ${provider.name}: ${err}`);
   }
   return null;
+}
+
+async function resolveSourceRepoName(provider: any, token: string, storedRepoName: string): Promise<string> {
+  if (!provider.type.toLowerCase().includes('gitlab') || !storedRepoName.startsWith('repo-')) {
+    return storedRepoName;
+  }
+
+  const candidate = storedRepoName.slice('repo-'.length);
+  if (!candidate.includes('/')) return storedRepoName;
+
+  const baseUrl = provider.url.replace(/\/$/, '');
+  const response = await trackedFetch(
+    provider.id,
+    `${baseUrl}/api/v4/projects/${encodeURIComponent(candidate)}`,
+    { headers: { 'Private-Token': token } }
+  );
+  return response.ok ? candidate : storedRepoName;
 }
 
 async function provisionTargetRepository(provider: any, repoName: string, description: string, token: string, sourceUrl?: string, visibility: string = 'private') {
@@ -653,7 +713,7 @@ async function getAuthUrl(provider: any, token: string, repoName: string) {
   return `https://${token}@${baseUrl}/${repoName}.git`;
 }
 
-async function syncCode(source: any, target: any, sourceRepoName: string, targetRepoName: string, sourceToken: string, targetToken: string) {
+async function syncCode(source: any, target: any, sourceRepoName: string, targetRepoName: string, sourceToken: string, targetToken: string, branches: string[] = ['*']) {
   const tmpDir = path.join(os.tmpdir(), `hydrozoa-${crypto.randomUUID()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -666,16 +726,25 @@ async function syncCode(source: any, target: any, sourceRepoName: string, target
     try {
       sysLog.info(`Cloning from source: ${sourceRepoName}...`);
       await execAsync(`git clone --mirror "${sourceUrl}" "${tmpDir}"`, { maxBuffer: 1024 * 1024 * 50 });
+      const { stdout: commit } = await execAsync(`git -C "${tmpDir}" rev-parse --short HEAD`);
       sysLog.info(`Successfully cloned ${sourceRepoName}. Pushing to ${targetRepoName}...`);
-      await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`, { maxBuffer: 1024 * 1024 * 50 });
+      if (branches.includes('*')) {
+        await execAsync(`cd "${tmpDir}" && git push --mirror "${targetUrl}"`, { maxBuffer: 1024 * 1024 * 50 });
+      } else {
+        const refspecs = branches
+          .map(branch => `refs/heads/${branch}:refs/heads/${branch}`)
+          .map(refspec => `"${refspec.replace(/"/g, '\\"')}"`)
+          .join(' ');
+        await execAsync(`cd "${tmpDir}" && git push "${targetUrl}" ${refspecs}`, { maxBuffer: 1024 * 1024 * 50 });
+      }
       sysLog.success(`Code sync successful for ${sourceRepoName} -> ${targetRepoName}`);
+      return commit.trim();
     } catch (gitErr: any) {
       const safeMessage = redactSensitive(gitErr.message);
       sysLog.error(`Git operation failed for ${sourceRepoName}: ${safeMessage}`);
       throw new Error(safeMessage);
     }
     
-    return true;
   } catch (err: any) {
     const safeMessage = redactSensitive(err.message);
     sysLog.error(`Code sync failed for ${sourceRepoName}: ${safeMessage}`);
@@ -685,7 +754,19 @@ async function syncCode(source: any, target: any, sourceRepoName: string, target
   }
 }
 
-async function syncIssues(source: any, target: any, repoName: string, sourceToken: string, targetToken: string, milestoneMap?: Record<string, any>) {
+function getMilestoneReference(provider: any, milestone: any): number | null {
+  if (!milestone) return null;
+  const type = provider.type.toLowerCase();
+  const value = type === 'github'
+    ? milestone.number
+    : type.includes('gitlab')
+      ? milestone.id
+      : milestone.id ?? milestone.number;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function syncIssues(source: any, target: any, sourceRepoName: string, targetRepoName: string, sourceToken: string, targetToken: string, milestoneMap?: Record<string, number>) {
   const sourceBase = source.url.replace(/\/$/, "");
   const targetBase = target.url.replace(/\/$/, "");
   const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
@@ -697,39 +778,38 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
   try {
     let sourceIssues = [];
     const sourcePath = source.type.toLowerCase().includes("gitlab")
-      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
+      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(sourceRepoName)}/issues?per_page=100`
       : source.type.toLowerCase() === "github"
-        ? `${sourceBase}/repos/${repoName}/issues?state=all&per_page=100`
+        ? `${sourceBase}/repos/${sourceRepoName}/issues?state=all&per_page=100`
         : source.type.toLowerCase() === "bitbucket"
-          ? `${sourceBase}/2.0/repositories/${repoName}/issues?pagelen=100`
-          : `${sourceBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
+          ? `${sourceBase}/2.0/repositories/${sourceRepoName}/issues?pagelen=100`
+          : `${sourceBase}/api/v1/repos/${sourceRepoName}/issues?state=all&per_page=100`;
 
     const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
-    if (resSource.ok) {
-      const data = await resSource.json();
-      sourceIssues = Array.isArray(data) ? data : (data.values || []);
-    }
+    if (!resSource.ok) throw new Error(`Unable to read source issues (HTTP ${resSource.status})`);
+    const sourceData = await resSource.json();
+    sourceIssues = Array.isArray(sourceData) ? sourceData : (sourceData.values || []);
 
     if (!Array.isArray(sourceIssues)) return false;
 
     let targetIssues = [];
     const targetPath = target.type.toLowerCase().includes("gitlab")
-      ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues?per_page=100`
+      ? `${targetBase}/api/v4/projects/${encodeURIComponent(targetRepoName)}/issues?per_page=100`
       : target.type.toLowerCase() === "github"
-        ? `${targetBase}/repos/${repoName}/issues?state=all&per_page=100`
+        ? `${targetBase}/repos/${targetRepoName}/issues?state=all&per_page=100`
         : target.type.toLowerCase() === "bitbucket"
-          ? `${targetBase}/2.0/repositories/${repoName}/issues?pagelen=100`
-          : `${targetBase}/api/v1/repos/${repoName}/issues?state=all&per_page=100`;
+          ? `${targetBase}/2.0/repositories/${targetRepoName}/issues?pagelen=100`
+          : `${targetBase}/api/v1/repos/${targetRepoName}/issues?state=all&per_page=100`;
 
-    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
-    if (resTarget.ok) {
-      const data = await resTarget.json();
-      targetIssues = Array.isArray(data) ? data : (data.values || []);
-    }
+    const resTarget = await trackedFetch(target.id, targetPath, { headers: headersTarget });
+    if (!resTarget.ok) throw new Error(`Unable to read target issues (HTTP ${resTarget.status})`);
+    const targetData = await resTarget.json();
+    targetIssues = Array.isArray(targetData) ? targetData : (targetData.values || []);
 
     const existingTitles = new Set(targetIssues.map((i: any) => i.title));
     let created = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const issue of sourceIssues) {
       if (issue.pull_request) continue;
@@ -760,60 +840,67 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
       try {
         let createRes;
         if (target.type.toLowerCase().includes("gitlab")) {
-          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/issues`, {
+          const payload: Record<string, any> = {
+            title,
+            description: body,
+            labels: labels.join(',')
+          };
+          if (targetMilestoneId !== null) payload.milestone_id = targetMilestoneId;
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(targetRepoName)}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ 
-              title, 
-              description: body, 
-              labels: labels.join(','),
-              milestone_id: targetMilestoneId 
-            })
+            body: JSON.stringify(payload)
           });
         } else if (target.type.toLowerCase() === "github") {
-          createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/issues`, {
+          const payload: Record<string, any> = {
+            title: sanitizeForGithub(title),
+            body: sanitizeForGithub(body),
+            labels
+          };
+          if (targetMilestoneId !== null) payload.milestone = targetMilestoneId;
+          createRes = await trackedFetch(target.id, `${targetBase}/repos/${targetRepoName}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ 
-              title: sanitizeForGithub(title), 
-              body: sanitizeForGithub(body), 
-              labels,
-              milestone: targetMilestoneId
-            })
+            body: JSON.stringify(payload)
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
           // Bitbucket doesn't have native 'labels' or standard 'milestone' on issues API 2.0
-          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/issues`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${targetRepoName}/issues`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, content: { raw: body } })
           });
         } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
-          createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${repoName}/issues`, {
+          const payload: Record<string, any> = { title, body };
+          if (targetMilestoneId !== null) payload.milestone = targetMilestoneId;
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${targetRepoName}/issues`, {
             method: "POST",
             headers: headersTarget,
-            body: JSON.stringify({ title, body, labels, milestone: targetMilestoneId })
+            body: JSON.stringify(payload)
           });
         }
 
         if (createRes && createRes.ok) {
           created++;
         } else {
+          failed++;
           sysLog.warn(`Failed to create issue "${title}" on ${target.name}: ${createRes ? await createRes.text() : "Unknown error"}`);
         }
       } catch (e) {
+        failed++;
         sysLog.error(`Error creating issue "${title}" on ${target.name}: ${e}`);
       }
     }
-    sysLog.success(`Issue sync complete for ${repoName}: ${created} created, ${skipped} skipped.`);
+    if (failed > 0) throw new Error(`Issue sync failed for ${failed} item${failed === 1 ? '' : 's'}`);
+    sysLog.success(`Issue sync complete for ${sourceRepoName}: ${created} created, ${skipped} skipped.`);
     return true;
   } catch (err) {
-    sysLog.error(`Issue sync failed for ${repoName}: ${err}`);
-    return false;
+    sysLog.error(`Issue sync failed for ${sourceRepoName}: ${err}`);
+    throw err;
   }
 }
 
-async function syncMilestones(source: any, target: any, repoName: string, sourceToken: string, targetToken: string): Promise<Record<string, any>> {
+async function syncMilestones(source: any, target: any, sourceRepoName: string, targetRepoName: string, sourceToken: string, targetToken: string): Promise<Record<string, number>> {
   const sourceBase = source.url.replace(/\/$/, "");
   const targetBase = target.url.replace(/\/$/, "");
   const headersSource: any = { "User-Agent": "Hydrozoa-Mirror-Agent", "Accept": "application/json" };
@@ -822,48 +909,48 @@ async function syncMilestones(source: any, target: any, repoName: string, source
   Object.assign(headersSource, getProviderHeaders(source, sourceToken));
   Object.assign(headersTarget, getProviderHeaders(target, targetToken));
 
-  const milestoneMap: Record<string, any> = {};
+  const milestoneMap: Record<string, number> = {};
 
   try {
     let sourceMilestones = [];
     const sourcePath = source.type.toLowerCase().includes("gitlab")
-      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
+      ? `${sourceBase}/api/v4/projects/${encodeURIComponent(sourceRepoName)}/milestones?per_page=100`
       : source.type.toLowerCase() === "github"
-        ? `${sourceBase}/repos/${repoName}/milestones?state=all&per_page=100`
+        ? `${sourceBase}/repos/${sourceRepoName}/milestones?state=all&per_page=100`
         : source.type.toLowerCase() === "bitbucket"
-          ? `${sourceBase}/2.0/repositories/${repoName}/issues/milestones?pagelen=100`
-          : `${sourceBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
+          ? `${sourceBase}/2.0/repositories/${sourceRepoName}/issues/milestones?pagelen=100`
+          : `${sourceBase}/api/v1/repos/${sourceRepoName}/milestones?state=all&per_page=100`;
 
     const resSource = await trackedFetch(source.id, sourcePath, { headers: headersSource });
-    if (resSource.ok) {
-      const data = await resSource.json();
-      sourceMilestones = Array.isArray(data) ? data : (data.values || []);
-    }
+    if (!resSource.ok) throw new Error(`Unable to read source milestones (HTTP ${resSource.status})`);
+    const sourceData = await resSource.json();
+    sourceMilestones = Array.isArray(sourceData) ? sourceData : (sourceData.values || []);
 
     if (!Array.isArray(sourceMilestones)) return {};
 
     let targetMilestones = [];
     const targetPath = target.type.toLowerCase().includes("gitlab")
-      ? `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones?per_page=100`
+      ? `${targetBase}/api/v4/projects/${encodeURIComponent(targetRepoName)}/milestones?per_page=100`
       : target.type.toLowerCase() === "github"
-        ? `${targetBase}/repos/${repoName}/milestones?state=all&per_page=100`
+        ? `${targetBase}/repos/${targetRepoName}/milestones?state=all&per_page=100`
         : target.type.toLowerCase() === "bitbucket"
-          ? `${targetBase}/2.0/repositories/${repoName}/issues/milestones?pagelen=100`
-          : `${targetBase}/api/v1/repos/${repoName}/milestones?state=all&per_page=100`;
+          ? `${targetBase}/2.0/repositories/${targetRepoName}/issues/milestones?pagelen=100`
+          : `${targetBase}/api/v1/repos/${targetRepoName}/milestones?state=all&per_page=100`;
 
-    const resTarget = await trackedFetch(source.id, targetPath, { headers: headersTarget });
-    if (resTarget.ok) {
-      const data = await resTarget.json();
-      targetMilestones = Array.isArray(data) ? data : (data.values || []);
-    }
+    const resTarget = await trackedFetch(target.id, targetPath, { headers: headersTarget });
+    if (!resTarget.ok) throw new Error(`Unable to read target milestones (HTTP ${resTarget.status})`);
+    const targetData = await resTarget.json();
+    targetMilestones = Array.isArray(targetData) ? targetData : (targetData.values || []);
 
     // Map existing target milestones
     targetMilestones.forEach((m: any) => {
-      milestoneMap[m.title] = m.id || m.iid || m.number;
+      const reference = getMilestoneReference(target, m);
+      if (reference !== null) milestoneMap[m.title] = reference;
     });
 
     let created = 0;
     let skipped = 0;
+    let failed = 0;
 
     for (const ms of sourceMilestones) {
       const title = ms.title;
@@ -877,13 +964,13 @@ async function syncMilestones(source: any, target: any, repoName: string, source
       try {
         let createRes;
         if (target.type.toLowerCase().includes("gitlab")) {
-          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(repoName)}/milestones`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v4/projects/${encodeURIComponent(targetRepoName)}/milestones`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, description })
           });
         } else if (target.type.toLowerCase() === "github") {
-          createRes = await trackedFetch(target.id, `${targetBase}/repos/${repoName}/milestones`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/repos/${targetRepoName}/milestones`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ 
@@ -892,13 +979,13 @@ async function syncMilestones(source: any, target: any, repoName: string, source
             })
           });
         } else if (target.type.toLowerCase() === "bitbucket") {
-          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${repoName}/issues/milestones`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/2.0/repositories/${targetRepoName}/issues/milestones`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ name: title })
           });
         } else if (["gitea", "forgejo", "gogs"].includes(target.type.toLowerCase())) {
-          createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${repoName}/milestones`, {
+          createRes = await trackedFetch(target.id, `${targetBase}/api/v1/repos/${targetRepoName}/milestones`, {
             method: "POST",
             headers: headersTarget,
             body: JSON.stringify({ title, description })
@@ -907,20 +994,25 @@ async function syncMilestones(source: any, target: any, repoName: string, source
 
         if (createRes && createRes.ok) {
           const newMs = await createRes.json();
-          milestoneMap[title] = newMs.id || newMs.iid || newMs.number;
+          const reference = getMilestoneReference(target, newMs);
+          if (reference === null) throw new Error(`Target milestone "${title}" did not return a compatible reference`);
+          milestoneMap[title] = reference;
           created++;
         } else {
+          failed++;
           sysLog.warn(`Failed to create milestone "${title}" on ${target.name}: ${createRes ? await createRes.text() : "Unknown error"}`);
         }
       } catch (e) {
+        failed++;
         sysLog.error(`Error creating milestone "${title}" on ${target.name}: ${e}`);
       }
     }
-    sysLog.success(`Milestone sync complete for ${repoName}: ${created} created, ${skipped} skipped.`);
+    if (failed > 0) throw new Error(`Milestone sync failed for ${failed} item${failed === 1 ? '' : 's'}`);
+    sysLog.success(`Milestone sync complete for ${sourceRepoName}: ${created} created, ${skipped} skipped.`);
     return milestoneMap;
   } catch (err) {
-    sysLog.error(`Milestone sync failed for ${repoName}: ${err}`);
-    return milestoneMap;
+    sysLog.error(`Milestone sync failed for ${sourceRepoName}: ${err}`);
+    throw err;
   }
 }
 async function syncReleases(source: any, target: any, repoName: string, sourceToken: string, targetToken: string) {
@@ -1175,6 +1267,10 @@ async function syncSnippets(source: any, target: any, repoName: string, sourceTo
 
 async function processSyncItem(item: any) {
   sysLog.info(`Processing mirror item: ${item.source_repo}`);
+  if (item.enabled === false) {
+    sysLog.info(`Skipping paused mirror item: ${item.source_repo}`);
+    return;
+  }
   // Fetch latest settings
   const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
   const settings = settingsRes.rows[0];
@@ -1184,7 +1280,14 @@ async function processSyncItem(item: any) {
   if (!sourceProvider) return;
 
   const sourceToken = decrypt(sourceProvider.token);
+  const sourceRepoName = await resolveSourceRepoName(sourceProvider, sourceToken, item.source_repo);
+  if (sourceRepoName !== item.source_repo) {
+    sysLog.info(`Repairing legacy repository path: ${item.source_repo} -> ${sourceRepoName}`);
+    await pool.query('UPDATE sync_matrix SET source_repo = $1 WHERE id = $2', [sourceRepoName, item.id]);
+    item.source_repo = sourceRepoName;
+  }
   const entities = Array.isArray(item.entities) ? item.entities : ['code'];
+  const branches = normalizeBranches(item.branches, [item.branch || '*']);
 
   for (const targetRef of item.targets) {
     if (targetRef.status === 'syncing') continue; // Avoid overlap
@@ -1200,23 +1303,34 @@ async function processSyncItem(item: any) {
         ? `${targetOwner}/${item.source_repo.split('/').pop()}`
         : item.source_repo.split('/').pop());
     const syncStart = Date.now();
+    const updateTargetActivity = async (artifact: string, progress: number) => {
+      targetRef.current_artifact = artifact;
+      targetRef.progress = progress;
+      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+    };
     sysLog.info(`Sync starting: ${item.source_repo} -> ${targetProvider.name} (Entities: ${entities.join(', ')})`);
 
     try {
       // Step 1: Forward Sync (Source -> Target)
       targetRef.status = 'syncing';
-      targetRef.progress = 10;
+      targetRef.sync_started_at = new Date(syncStart).toISOString();
+      targetRef.current_artifact = 'Preparing';
+      targetRef.progress = 5;
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
       if (entities.includes('code')) {
+        await updateTargetActivity('Commits', 15);
         sysLog.debug(`[${item.source_repo}] Pushing code...`);
-        await syncCode(sourceProvider, targetProvider, item.source_repo, targetRepoName, sourceToken, targetToken);
+        const commit = await syncCode(sourceProvider, targetProvider, item.source_repo, targetRepoName, sourceToken, targetToken, branches);
+        item.last_commit = commit;
+        await pool.query('UPDATE sync_matrix SET last_commit = $1 WHERE id = $2', [commit, item.id]);
       }
       
       let milestoneMap = {};
       if (entities.includes('milestones')) {
+        await updateTargetActivity('Milestones', 30);
         sysLog.debug(`[${item.source_repo}] Mapping milestones...`);
-        milestoneMap = await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+        milestoneMap = await syncMilestones(sourceProvider, targetProvider, item.source_repo, targetRepoName, sourceToken, targetToken);
       }
 
       // Step 2: Bidirectional Sync (Target -> Source) if enabled
@@ -1224,39 +1338,52 @@ async function processSyncItem(item: any) {
         sysLog.info(`[${item.source_repo}] Reverse sync active.`);
         let revMilestoneMap = {};
         if (entities.includes('milestones')) {
-          revMilestoneMap = await syncMilestones(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+          await updateTargetActivity('Milestones · reverse', 45);
+          revMilestoneMap = await syncMilestones(targetProvider, sourceProvider, targetRepoName, item.source_repo, targetToken, sourceToken);
         }
-        if (entities.includes('issues')) await syncIssues(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken, revMilestoneMap);
-        if (entities.includes('releases')) await syncReleases(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
-        if (entities.includes('snippets')) await syncSnippets(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        if (entities.includes('issues')) {
+          await updateTargetActivity('Issues · reverse', 50);
+          await syncIssues(targetProvider, sourceProvider, targetRepoName, item.source_repo, targetToken, sourceToken, revMilestoneMap);
+        }
+        if (entities.includes('releases')) {
+          await updateTargetActivity('Releases · reverse', 55);
+          await syncReleases(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        }
+        if (entities.includes('snippets')) {
+          await updateTargetActivity('Snippets · reverse', 60);
+          await syncSnippets(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
+        }
       }
-
-      targetRef.progress = 60;
-      await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
       if (entities.includes('issues')) {
+        await updateTargetActivity('Issues', 70);
         sysLog.debug(`[${item.source_repo}] Syncing issues...`);
-        await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken, milestoneMap);
+        await syncIssues(sourceProvider, targetProvider, item.source_repo, targetRepoName, sourceToken, targetToken, milestoneMap);
       }
       if (entities.includes('releases')) {
+        await updateTargetActivity('Releases', 80);
         sysLog.debug(`[${item.source_repo}] Syncing releases...`);
         await syncReleases(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       }
       if (entities.includes('snippets')) {
+        await updateTargetActivity('Snippets', 90);
         sysLog.debug(`[${item.source_repo}] Syncing snippets...`);
         await syncSnippets(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       }
       
-      const durationSeconds = Math.floor((Date.now() - syncStart) / 1000);
+      const durationSeconds = Math.max(1, Math.floor((Date.now() - syncStart) / 1000));
       const durationStr = `${durationSeconds}s`;
 
       targetRef.status = 'synced';
       targetRef.progress = 100;
       targetRef.last_sync = new Date().toISOString();
+      targetRef.last_artifact = targetRef.current_artifact === 'Preparing' ? 'Repository' : targetRef.current_artifact;
+      targetRef.current_artifact = null;
+      targetRef.sync_started_at = null;
       
       await pool.query(
-        'UPDATE sync_matrix SET targets = $1, last_sync_duration = $2 WHERE id = $3', 
-        [JSON.stringify(item.targets), durationStr, item.id]
+        'UPDATE sync_matrix SET targets = $1, last_sync_duration = $2, success_rate = $3 WHERE id = $4',
+        [JSON.stringify(item.targets), durationStr, 100, item.id]
       );
       
       sysLog.success(`Sync finished: ${item.source_repo} -> ${targetProvider.name} (${durationStr})`);
@@ -1272,8 +1399,13 @@ async function processSyncItem(item: any) {
       });
 
     } catch (err: any) {
+      const durationSeconds = Math.max(1, Math.floor((Date.now() - syncStart) / 1000));
       targetRef.status = 'error';
       targetRef.failure_reason = err.message;
+      targetRef.last_artifact = targetRef.current_artifact;
+      targetRef.current_artifact = null;
+      targetRef.sync_started_at = null;
+      targetRef.last_sync = new Date().toISOString();
       
       await pool.query('INSERT INTO dlq_items (id, source_repo, target_node, error_code, error_message) VALUES ($1, $2, $3, $4, $5)',
         [crypto.randomUUID(), item.source_repo, targetProvider.name, 'SYNC_FAIL', err.message]);
@@ -1291,12 +1423,16 @@ async function processSyncItem(item: any) {
       sysLog.error(`Sync failed for ${item.source_repo} -> ${targetProvider.name}: ${err.message}`);
     }
 
-    await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
+    await pool.query(
+      'UPDATE sync_matrix SET targets = $1, last_sync_duration = $2 WHERE id = $3',
+      [JSON.stringify(item.targets), `${Math.max(1, Math.floor((Date.now() - syncStart) / 1000))}s`, item.id]
+    );
   }
 }
 
 // Background tasks
 let isSyncing = false;
+let nextSyncRunAt = new Date(Date.now() + 5000).toISOString();
 const runSyncEngine = async () => {
   if (isSyncing) return;
   isSyncing = true;
@@ -1306,8 +1442,9 @@ const runSyncEngine = async () => {
     const settingsRes = await pool.query('SELECT * FROM system_settings WHERE id = 1');
     const settings = settingsRes.rows[0];
     syncIntervalMinutes = settings?.sync_interval || 15;
+    await enforceLogRetention(settings?.log_retention_days);
 
-    const matrixRes = await pool.query('SELECT * FROM sync_matrix');
+    const matrixRes = await pool.query('SELECT * FROM sync_matrix WHERE enabled = true');
     if (matrixRes.rows.length === 0) {
       sysLog.info("Sync engine: No repositories configured for mirroring yet.");
     } else {
@@ -1332,6 +1469,7 @@ const runSyncEngine = async () => {
     sysLog.error(`Sync engine error: ${err}`);
   } finally {
     isSyncing = false;
+    nextSyncRunAt = new Date(Date.now() + syncIntervalMinutes * 60 * 1000).toISOString();
     sysLog.info(`Sync engine cycle complete. Next run in ${syncIntervalMinutes} minutes.`);
     setTimeout(runSyncEngine, syncIntervalMinutes * 60 * 1000);
   }
@@ -1668,7 +1806,7 @@ async function startServer() {
 
         return res.json(safeReposData.map((repo: any) => ({
           id: repo.id.toString(),
-          name: repo.name,
+          name: repo.full_name || repo.name,
           description: repo.description,
           web_url: repo.html_url,
           visibility: repo.private ? 'private' : 'public'
@@ -1775,6 +1913,49 @@ async function startServer() {
     }
   });
 
+  app.get("/api/v1/source/repos/:repo/branches", authenticateToken, async (req, res) => {
+    try {
+      const sourceResult = await pool.query('SELECT * FROM providers WHERE is_source = true LIMIT 1');
+      const provider = sourceResult.rows[0];
+      if (!provider) return res.status(400).json({ error: "No source provider configured" });
+
+      const token = decrypt(provider.token);
+      const repo = req.params.repo;
+      const type = provider.type.toLowerCase();
+      let baseUrl = provider.url.replace(/\/$/, "");
+      if (type === 'github' && /^https?:\/\/github\.com$/i.test(baseUrl)) baseUrl = 'https://api.github.com';
+      if (type === 'bitbucket' && /^https?:\/\/bitbucket\.org$/i.test(baseUrl)) baseUrl = 'https://api.bitbucket.org';
+      const headers: Record<string, string> = {};
+      let url: string;
+
+      if (type === 'github') {
+        headers.Authorization = `Bearer ${token}`;
+        headers.Accept = 'application/vnd.github+json';
+        url = `${baseUrl}/repos/${repo}/branches?per_page=100`;
+      } else if (type.includes('gitlab')) {
+        headers['Private-Token'] = token;
+        url = `${baseUrl}/api/v4/projects/${encodeURIComponent(repo)}/repository/branches?per_page=100`;
+      } else if (type === 'bitbucket') {
+        headers.Authorization = `Bearer ${token}`;
+        url = `${baseUrl}/2.0/repositories/${repo}/refs/branches?pagelen=100`;
+      } else {
+        headers.Authorization = `token ${token}`;
+        url = `${baseUrl}/api/v1/repos/${repo}/branches?limit=100`;
+      }
+
+      const branchResponse = await trackedFetch(provider.id, url, { headers });
+      if (!branchResponse.ok) {
+        return res.status(branchResponse.status).json({ error: "Failed to fetch repository branches" });
+      }
+      const payload = await branchResponse.json();
+      const records = Array.isArray(payload) ? payload : (payload.values || []);
+      res.json(records.map((record: any) => record.name).filter(Boolean));
+    } catch (err: any) {
+      sysLog.error(`Failed to fetch branches: ${err.message}`);
+      res.status(500).json({ error: "Failed to fetch repository branches" });
+    }
+  });
+
   app.post("/api/v1/auth/providers", authenticateToken, async (req, res) => {
     let { name, type, url, token, isSource, baseUrl, webhookSecret } = req.body;
     name = typeof name === 'string' ? name.trim() : name;
@@ -1864,6 +2045,39 @@ async function startServer() {
       sysLog.error(`Error adding provider: ${err}`);
       res.status(500).json({ error: "Internal server error while adding provider", detail: err.message });
     }
+  });
+
+  app.patch("/api/v1/auth/providers/:id", authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    const existingResult = await pool.query('SELECT * FROM providers WHERE id = $1', [id]);
+    const existing = existingResult.rows[0];
+    if (!existing) return res.status(404).json({ error: "Provider not found" });
+
+    const name = typeof req.body.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : existing.name;
+    let url = typeof req.body.baseUrl === 'string' && req.body.baseUrl.trim()
+      ? req.body.baseUrl.trim().replace(/\/$/, '')
+      : existing.url;
+    if (existing.type === 'github' && /^https?:\/\/github\.com$/i.test(url)) url = 'https://api.github.com';
+    if (existing.type === 'bitbucket' && /^https?:\/\/bitbucket\.org$/i.test(url)) url = 'https://api.bitbucket.org';
+
+    const replacementToken = typeof req.body.token === 'string' ? req.body.token.trim() : '';
+    const token = replacementToken || decrypt(existing.token);
+    const candidate = { ...existing, name, url };
+    const identityRequest = getProviderIdentityRequest(candidate, token);
+    if (!identityRequest) return res.status(400).json({ error: "Unsupported provider type" });
+
+    const identityResponse = await trackedFetch(id, identityRequest.url, { headers: identityRequest.headers });
+    if (!identityResponse.ok) {
+      return res.status(422).json({ error: `Provider authentication failed with HTTP ${identityResponse.status}` });
+    }
+
+    await pool.query(
+      'UPDATE providers SET name = $1, url = $2, token = $3 WHERE id = $4',
+      [name, url, replacementToken ? encrypt(replacementToken) : existing.token, id]
+    );
+    res.json({ ...candidate, baseUrl: url, token: "ENCRYPTED", isSource: existing.is_source });
   });
 
   app.post("/api/v1/webhooks/incoming/:providerId", async (req, res) => {
@@ -2059,16 +2273,38 @@ async function startServer() {
     });
   });
 
-  app.get("/api/v1/system/providers-info", authenticateToken, (req, res) => {
+  app.get("/api/v1/system/providers-info", authenticateToken, async (req, res) => {
+    const result = await pool.query('SELECT name, type FROM providers ORDER BY name');
+    const versions: Record<string, string> = {
+      github: 'REST v3',
+      gitlab: 'REST v4',
+      bitbucket: 'REST 2.0',
+      gitea: 'REST v1',
+      forgejo: 'REST v1',
+      gogs: 'REST v1'
+    };
     res.json({
-      providers: [
-        { name: "GitHub", apiVersion: "v3 (REST)", status: "connected" },
-        { name: "GitLab", apiVersion: "v4", status: "connected" },
-        { name: "Gogs", apiVersion: "v1", status: "connected" },
-        { name: "Forgejo", apiVersion: "v1", status: "connected" },
-        { name: "Gitea", apiVersion: "v1", status: "connected" }
-      ]
+      providers: result.rows.map(provider => ({
+        name: provider.name,
+        apiVersion: versions[provider.type.toLowerCase()] || 'Provider API',
+        status: 'configured'
+      }))
     });
+  });
+
+  app.get("/api/v1/system/rate-limits", authenticateToken, async (_req, res) => {
+    const result = await pool.query(`
+      SELECT DISTINCT ON (provider_id)
+        provider_id,
+        rate_limit_limit AS limit,
+        rate_limit_remaining AS remaining,
+        rate_limit_reset AS reset,
+        timestamp
+      FROM api_metrics
+      WHERE rate_limit_limit IS NOT NULL OR rate_limit_remaining IS NOT NULL
+      ORDER BY provider_id, timestamp DESC
+    `);
+    res.json(result.rows);
   });
 
   app.get("/api/v1/system/dlq", authenticateToken, async (req, res) => {
@@ -2087,12 +2323,17 @@ async function startServer() {
 
   app.get("/api/v1/system/sync-matrix", authenticateToken, async (req, res) => {
     const result = await pool.query('SELECT * FROM sync_matrix');
-    res.json({ sync_matrix: result.rows });
+    res.json({
+      sync_matrix: result.rows.map(item => ({
+        ...item,
+        next_sync_at: item.enabled === false ? null : nextSyncRunAt
+      }))
+    });
   });
 
   app.patch("/api/v1/system/sync-matrix/:id", authenticateToken, async (req, res) => {
     const { id } = req.params;
-    const { entities, sync_interval, branch } = req.body;
+    const { entities, sync_interval, branch, branches, enabled } = req.body;
     
     try {
       const result = await pool.query('SELECT * FROM sync_matrix WHERE id = $1', [id]);
@@ -2102,10 +2343,12 @@ async function startServer() {
       const updatedEntities = entities || item.entities;
       const updatedInterval = sync_interval || item.sync_interval;
       const updatedBranch = branch || item.branch;
+      const updatedBranches = normalizeBranches(branches, normalizeBranches(item.branches));
+      const updatedEnabled = typeof enabled === 'boolean' ? enabled : item.enabled;
 
       await pool.query(
-        'UPDATE sync_matrix SET entities = $1, sync_interval = $2, branch = $3 WHERE id = $4',
-        [JSON.stringify(updatedEntities), updatedInterval, updatedBranch, id]
+        'UPDATE sync_matrix SET entities = $1, sync_interval = $2, branch = $3, branches = $4, enabled = $5 WHERE id = $6',
+        [JSON.stringify(updatedEntities), updatedInterval, updatedBranch, JSON.stringify(updatedBranches), updatedEnabled, id]
       );
 
       await addLog({
@@ -2163,7 +2406,20 @@ async function startServer() {
     const result = await pool.query('SELECT * FROM dlq_items WHERE id = $1', [id]);
     const item = result.rows[0];
     if (item) {
+      const repairedName = item.source_repo.startsWith('repo-')
+        ? item.source_repo.slice('repo-'.length)
+        : item.source_repo;
+      const matrixResult = await pool.query(
+        'SELECT * FROM sync_matrix WHERE source_repo = $1 OR source_repo = $2 LIMIT 1',
+        [item.source_repo, repairedName]
+      );
+      const matrixItem = matrixResult.rows[0];
+      if (!matrixItem) {
+        return res.status(404).json({ error: "The synchronization matrix item for this failed operation no longer exists." });
+      }
+
       await pool.query('DELETE FROM dlq_items WHERE id = $1', [id]);
+      processSyncItem(matrixItem).catch(err => sysLog.error(`DLQ replay background error: ${err}`));
       await addLog({
         level: "info",
         code: "H-DLQ-REPLAY",
@@ -2173,7 +2429,7 @@ async function startServer() {
         ui_message: `Replaying failed sync for ${item.source_repo}`,
         resolution: "Monitoring replay progress."
       });
-      res.status(200).json({ message: "Replay initiated" });
+      res.status(202).json({ message: "Replay initiated" });
     } else {
       res.status(404).json({ error: "Item not found" });
     }
@@ -2202,6 +2458,40 @@ async function startServer() {
     res.json({ logs: formattedLogs });
   });
 
+  app.delete("/api/v1/logs", authenticateToken, async (_req, res) => {
+    const result = await pool.query('DELETE FROM logs');
+    res.json({ message: "System logs cleared", deleted: result.rowCount || 0 });
+  });
+
+  app.delete("/api/v1/system/sync-matrix", authenticateToken, async (_req, res) => {
+    const activeResult = await pool.query(
+      `SELECT count(*)::int AS count
+       FROM sync_matrix
+       WHERE targets::text LIKE '%"status":"syncing"%'`
+    );
+    if (activeResult.rows[0]?.count > 0) {
+      return res.status(409).json({ error: "Cannot reset the synchronization matrix while syncs are running." });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const matrixResult = await client.query('DELETE FROM sync_matrix');
+      const dlqResult = await client.query('DELETE FROM dlq_items');
+      await client.query('COMMIT');
+      res.json({
+        message: "Synchronization matrix reset",
+        deleted: matrixResult.rowCount || 0,
+        dlqDeleted: dlqResult.rowCount || 0
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+
   app.get("/api/v1/auth/providers", authenticateToken, async (req, res) => {
     const result = await pool.query('SELECT * FROM providers');
     res.json(result.rows.map(p => ({
@@ -2227,7 +2517,8 @@ async function startServer() {
         description: repo.description || "Automated mirror target",
         tags: repo.tags || ["hydrozoa", "mirror"],
         entities: repo.entities || entities || ["code"],
-        branch: repo.branch || "main",
+        branch: repo.branches?.includes('*') ? 'all' : (repo.branches?.join(', ') || repo.branch || "main"),
+        branches: normalizeBranches(repo.branches, [repo.branch || '*']),
         visibility: repo.visibility || "private",
         web_url: repo.web_url
       };
@@ -2236,19 +2527,6 @@ async function startServer() {
     const sourceProviderRes = await pool.query('SELECT * FROM providers WHERE is_source = true');
     const sourceProvider = sourceProviderRes.rows[0];
     const sourceProviderId = sourceProvider ? sourceProvider.id : 'unknown';
-
-    // Remove any items from sync_matrix that were deselected
-    if (sourceProviderId !== 'unknown') {
-      const currentSyncsRes = await pool.query('SELECT source_repo FROM sync_matrix WHERE source_provider = $1', [sourceProviderId]);
-      const selectedRepoNames = selectedRepoDetails.map(r => r.name);
-      
-      for (const row of currentSyncsRes.rows) {
-        if (!selectedRepoNames.includes(row.source_repo)) {
-          sysLog.info(`Removing deselected repository from sync matrix: ${row.source_repo}`);
-          await pool.query('DELETE FROM sync_matrix WHERE source_repo = $1 AND source_provider = $2', [row.source_repo, sourceProviderId]);
-        }
-      }
-    }
 
     const provisionSummary = [];
 
@@ -2314,35 +2592,36 @@ async function startServer() {
                 provider_id: providerId,
                 target_repo: provisionResult.targetRepo,
                 status: 'pending',
-                last_sync: new Date().toISOString(),
-                bytes_transferred: "0B",
+                last_sync: null,
                 progress: 0
               });
-              await pool.query('UPDATE sync_matrix SET targets = $1, entities = $2, branch = $3 WHERE id = $4', [JSON.stringify(targets), JSON.stringify(repo.entities), repo.branch, existingSync.id]);
             }
+            await pool.query(
+              'UPDATE sync_matrix SET targets = $1, entities = $2, branch = $3, branches = $4 WHERE id = $5',
+              [JSON.stringify(targets), JSON.stringify(repo.entities), repo.branch, JSON.stringify(repo.branches), existingSync.id]
+            );
           } else {
             const newSync = {
               id: `sm-${crypto.randomUUID().slice(0, 8)}`,
               source_repo: repo.name,
               source_provider: sourceProviderId,
               branch: repo.branch,
-              last_commit: "initial",
+              last_commit: null,
               sync_interval: 15,
-              last_sync_duration: "0s",
-              success_rate: 100,
+              last_sync_duration: null,
+              success_rate: 0,
               targets: [{
                 provider_id: providerId,
                 target_repo: provisionResult.targetRepo,
                 status: 'pending',
-                last_sync: new Date().toISOString(),
-                bytes_transferred: "0B",
+                last_sync: null,
                 progress: 0
               }],
               entities: repo.entities
             };
             await pool.query(
-              'INSERT INTO sync_matrix (id, source_repo, source_provider, branch, last_commit, sync_interval, last_sync_duration, success_rate, targets, entities) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
-              [newSync.id, newSync.source_repo, newSync.source_provider, newSync.branch, newSync.last_commit, newSync.sync_interval, newSync.last_sync_duration, newSync.success_rate, JSON.stringify(newSync.targets), JSON.stringify(newSync.entities)]
+              'INSERT INTO sync_matrix (id, source_repo, source_provider, branch, branches, last_commit, sync_interval, last_sync_duration, success_rate, targets, entities) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+              [newSync.id, newSync.source_repo, newSync.source_provider, newSync.branch, JSON.stringify(repo.branches), newSync.last_commit, newSync.sync_interval, newSync.last_sync_duration, newSync.success_rate, JSON.stringify(newSync.targets), JSON.stringify(newSync.entities)]
             );
           }
         }
@@ -2390,7 +2669,7 @@ async function startServer() {
       `);
 
       // Fill in gaps for hours with no data
-      const dataMap = new Map(result.rows.map(r => [new Date(r.hour).getTime(), parseInt(r.count)]));
+      const dataMap = new Map(result.rows.map(r => [new Date(r.hour).getTime(), Number(r.count)]));
       const data = [];
       const now = new Date();
       now.setMinutes(0, 0, 0);
@@ -2398,7 +2677,7 @@ async function startServer() {
       for (let i = 23; i >= 0; i--) {
         const hour = new Date(now.getTime() - i * 3600000);
         data.push({
-          x: hour.toISOString(),
+          x: hour.getTime(),
           y: dataMap.get(hour.getTime()) || 0
         });
       }
@@ -2416,18 +2695,25 @@ async function startServer() {
     const result = await pool.query('SELECT * FROM sync_matrix WHERE id = $1', [id]);
     const item = result.rows[0];
     if (!item) return res.status(404).json({ error: "Sync item not found" });
+    if (item.enabled === false) return res.status(409).json({ error: "This synchronization is paused." });
 
-    const targets = item.targets.map((t: any) => ({
+    if (item.targets.some((target: any) => target.status === 'syncing')) {
+      return res.status(409).json({ error: "A synchronization is already running for this repository." });
+    }
+
+    const optimisticTargets = item.targets.map((t: any) => ({
       ...t,
       status: 'syncing',
       progress: 0,
-      last_sync: new Date().toISOString()
+      sync_started_at: new Date().toISOString(),
+      current_artifact: 'Preparing'
     }));
 
-    await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(targets), id]);
-    
-    // Trigger sync immediately in background
-    processSyncItem({ ...item, targets }).catch(err => sysLog.error(`Manual sync background error: ${err}`));
+    await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(optimisticTargets), id]);
+
+    // Pass the original non-syncing snapshot to the worker while the persisted
+    // optimistic state prevents the scheduler from starting an overlapping run.
+    processSyncItem(item).catch(err => sysLog.error(`Manual sync background error: ${err}`));
     
     await addLog({
       level: "info",
@@ -2439,7 +2725,7 @@ async function startServer() {
       resolution: "Sync in progress."
     });
 
-    res.json({ message: "Manual sync initiated", item: { ...item, targets } });
+    res.json({ message: "Manual sync initiated", item: { ...item, targets: optimisticTargets } });
   });
 
   app.get("/api/v1/system/settings", authenticateToken, async (req, res) => {
@@ -2464,6 +2750,7 @@ async function startServer() {
         WHERE id = 1`,
         [sync_interval, log_retention_days, max_concurrent_syncs, bidirectional_sync, conflict_strategy]
       );
+      await enforceLogRetention(log_retention_days);
       
       await addLog({
         level: "info",

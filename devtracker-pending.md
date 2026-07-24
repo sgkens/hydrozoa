@@ -12,7 +12,6 @@
 
 ### **Features (priority-3)**
 
-- [x] 🔴🌟✅1️⃣ **Feature** - EPIC: Redesign the Hydrozoa documentation experience with animated app-parity branding, syntax highlighting, VHS splash terminal, responsive screenshot feature layouts, Lucide/Simple Icons, accessible staggered transitions, complete headless API reference, license guidance, and technology acknowledgements in docs and README
 ### **Bug Fixes (priority-4)**
 
 ### **Documentation (priority-5)**
@@ -24,3 +23,8 @@
 ### **Refine Documentation (priority-8)**
 
 ### **Backlog**
+- [ ] 🟠🌟⏳4️⃣ **Backlog** - Implement provider capability-aware entity selection
+- [ ] 🔴🌟⏳3️⃣ **Backlog** - Add paginated provider adapters for issues milestones releases snippets branches and repositories
+- [ ] 🔴🌟⏳3️⃣ **Backlog** - Create durable sync run and per-entity result history
+- [ ] 🟠🌟⏳3️⃣ **Backlog** - Make DLQ replay target-specific and entity-specific with retry history
+- [ ] 🟠🌟⏳2️⃣ **Backlog** - Implement per-repository due scheduling using last attempt and next run timestamps
