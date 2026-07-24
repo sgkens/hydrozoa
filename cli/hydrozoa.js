@@ -285,6 +285,8 @@ async function run() {
       { label: 'TIME', value: row => row.timestamp },
       { label: 'LEVEL', value: row => row.level },
       { label: 'MESSAGE', value: row => row.ui_message ?? row.message },
+      { label: 'DETAILS', value: row => row.technical_context ?? '' },
+      { label: 'RESOLUTION', value: row => row.resolution ?? '' },
     ]));
     return;
   }

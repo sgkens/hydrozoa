@@ -268,6 +268,26 @@ async function trackedFetch(providerId: string, url: string, options: any) {
       ]
     ).catch(err => sysLog.error(`Failed to track API metric: ${err}`));
 
+    if (!res.ok && res.status !== 404) {
+      const responseText = await res.clone().text().catch(() => "");
+      const safeDetail = responseText
+        .replace(/(token|authorization|password|secret)["']?\s*[:=]\s*["']?[^"',\s}]+/gi, '$1=***')
+        .slice(0, 1000);
+      await addLog({
+        level: "error",
+        code: "H-API-FAIL",
+        provider: providerId,
+        message: `Provider API request failed with HTTP ${res.status}`,
+        technical_context: `${options.method || 'GET'} ${endpoint} returned ${res.status}${safeDetail ? `: ${safeDetail}` : ''}`,
+        ui_message: `Provider API request failed (${res.status})`,
+        resolution: res.status === 401
+          ? "Replace the provider token and verify that it can access the selected repositories."
+          : res.status === 403
+            ? "Verify provider token scopes and organization permissions."
+            : "Review the provider response and endpoint configuration."
+      }).catch(err => sysLog.error(`Failed to persist API error log: ${err}`));
+    }
+
     return res;
   } catch (err) {
     throw err;
@@ -300,7 +320,7 @@ function decrypt(encryptedText: string) {
 
 function getProviderHeaders(provider: any, token: string) {
   const type = provider.type.toLowerCase();
-  if (type === "github") return { "Authorization": `token ${token}` };
+  if (type === "github") return { "Authorization": `Bearer ${token}` };
   if (type.includes("gitlab")) return { "Private-Token": token };
   if (["gitea", "forgejo", "gogs"].includes(type)) return { "Authorization": `token ${token}` };
   if (type === "bitbucket") return { "Authorization": `Bearer ${token}` };
@@ -314,49 +334,47 @@ function sanitizeForGithub(text: string): string {
   return text.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
 }
 
-async function getProviderUser(provider: any, token: string): Promise<string | null> {
+function getProviderIdentityRequest(provider: any, token: string) {
   const type = provider.type.toLowerCase();
   let baseUrl = provider.url.replace(/\/$/, '');
-  if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
-    baseUrl = 'https://api.github.com';
-  } else if (type === 'bitbucket' && (baseUrl === 'https://bitbucket.org' || baseUrl === 'http://bitbucket.org' || baseUrl === 'https://api.bitbucket.org/2.0')) {
-    baseUrl = 'https://api.bitbucket.org';
-  }
   const headers: Record<string, string> = {
     'User-Agent': 'Hydrozoa-Mirror-Agent',
     'Accept': 'application/json'
   };
 
-  try {
-    if (type === 'github') {
-      headers['Authorization'] = `token ${token}`;
-      const res = await trackedFetch(provider.id, `${baseUrl}/user`, { headers });
-      if (res.ok) {
-        const data = await res.json();
-        return data.login;
-      }
-    } else if (type.includes('gitlab')) {
-      headers['Private-Token'] = token;
-      const res = await trackedFetch(provider.id, `${baseUrl}/api/v4/user`, { headers });
-      if (res.ok) {
-        const data = await res.json();
-        return data.username;
-      }
-    } else if (['gitea', 'forgejo', 'gogs'].includes(type)) {
-      headers['Authorization'] = `token ${token}`;
-      const res = await trackedFetch(provider.id, `${baseUrl}/api/v1/user`, { headers });
-      if (res.ok) {
-        const data = await res.json();
-        return data.username;
-      }
-    } else if (type === 'bitbucket') {
-      headers['Authorization'] = `Bearer ${token}`;
-      const res = await trackedFetch(provider.id, `${baseUrl}/2.0/user`, { headers });
-      if (res.ok) {
-        const data = await res.json();
-        return data.nickname || data.username || data.uuid;
-      }
+  if (type === 'github') {
+    if (baseUrl === 'https://github.com' || baseUrl === 'http://github.com') {
+      baseUrl = 'https://api.github.com';
     }
+    headers.Authorization = `Bearer ${token}`;
+    return { url: `${baseUrl}/user`, headers, identityField: 'login' };
+  }
+  if (type.includes('gitlab')) {
+    headers['Private-Token'] = token;
+    return { url: `${baseUrl}/api/v4/user`, headers, identityField: 'username' };
+  }
+  if (['gitea', 'forgejo', 'gogs'].includes(type)) {
+    headers.Authorization = `token ${token}`;
+    return { url: `${baseUrl}/api/v1/user`, headers, identityField: 'username' };
+  }
+  if (type === 'bitbucket') {
+    if (baseUrl === 'https://bitbucket.org' || baseUrl === 'http://bitbucket.org' || baseUrl === 'https://api.bitbucket.org/2.0') {
+      baseUrl = 'https://api.bitbucket.org';
+    }
+    headers.Authorization = `Bearer ${token}`;
+    return { url: `${baseUrl}/2.0/user`, headers, identityField: 'nickname' };
+  }
+  return null;
+}
+
+async function getProviderUser(provider: any, token: string): Promise<string | null> {
+  const request = getProviderIdentityRequest(provider, token);
+  if (!request) return null;
+  try {
+    const res = await trackedFetch(provider.id, request.url, { headers: request.headers });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data[request.identityField] || data.username || data.uuid || null;
   } catch (err) {
     sysLog.error(`Error fetching user for ${provider.name}: ${err}`);
   }
@@ -426,7 +444,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
   try {
     let exists = false;
     if (type === 'github') {
-      headers['Authorization'] = `token ${token}`;
+      headers['Authorization'] = `Bearer ${token}`;
       const res = await trackedFetch(provider.id, `${baseUrl}/repos/${fullName}`, { headers });
       if (res.ok) exists = true;
       else if (![404, 401, 403].includes(res.status)) throw new Error(`API returned ${res.status}`);
@@ -1763,6 +1781,28 @@ async function startServer() {
     };
 
     try {
+      const identityRequest = getProviderIdentityRequest(provider, token);
+      if (!identityRequest) {
+        return res.status(400).json({ error: `Unsupported provider type: ${type}` });
+      }
+      const identityResponse = await trackedFetch(id, identityRequest.url, { headers: identityRequest.headers });
+      if (!identityResponse.ok) {
+        const detail = await identityResponse.text();
+        await addLog({
+          level: "error",
+          code: "H-PROV-AUTH",
+          provider: type,
+          message: `Provider authentication failed during registration: ${name}`,
+          technical_context: `${identityRequest.url} returned HTTP ${identityResponse.status}: ${detail.slice(0, 1000)}`,
+          ui_message: `Could not authenticate ${name}`,
+          resolution: "Replace the provider token and verify its repository and organization scopes."
+        });
+        return res.status(422).json({
+          error: `Provider authentication failed with HTTP ${identityResponse.status}`,
+          detail
+        });
+      }
+
       if (provider.isSource) {
         await pool.query('UPDATE providers SET is_source = false');
       }
@@ -1904,20 +1944,18 @@ async function startServer() {
       if (!provider) return res.status(404).json({ error: "Provider not found" });
 
       const start = Date.now();
-      const type = provider.type.toLowerCase();
-      let baseUrl = provider.url.replace(/\/$/, '');
-      if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
-        baseUrl = 'https://api.github.com';
-      }
-      
-      // Simple HEAD request to check reachability
-      const pingRes = await trackedFetch(provider.id, baseUrl, { 
-        method: 'HEAD',
-        headers: { 'User-Agent': 'Hydrozoa-Mirror-Agent' }
+      const identityRequest = getProviderIdentityRequest(provider, decrypt(provider.token));
+      if (!identityRequest) return res.json({ latency: "unsupported", status: "offline" });
+      const pingRes = await trackedFetch(provider.id, identityRequest.url, {
+        headers: identityRequest.headers
       });
       
       const latency = Date.now() - start;
-      res.json({ latency: `${latency}ms`, status: pingRes.ok ? "healthy" : "unstable" });
+      res.json({
+        latency: `${latency}ms`,
+        status: pingRes.ok ? "healthy" : "offline",
+        httpStatus: pingRes.status
+      });
     } catch (err) {
       res.json({ latency: "timeout", status: "offline" });
     }
@@ -1960,7 +1998,16 @@ async function startServer() {
 
   app.get("/api/v1/system/dlq", authenticateToken, async (req, res) => {
     const result = await pool.query('SELECT * FROM dlq_items');
-    res.json({ dlq_items: result.rows });
+    res.json({
+      dlq_items: result.rows.map(item => ({
+        ...item,
+        repository_id: item.source_repo,
+        target_provider: item.target_node,
+        entity_type: item.error_code,
+        failure_reason: item.error_message,
+        last_attempt: item.timestamp
+      }))
+    });
   });
 
   app.get("/api/v1/system/sync-matrix", authenticateToken, async (req, res) => {
@@ -2012,10 +2059,10 @@ async function startServer() {
       await addLog({
         level: "info",
         code: "H-DLQ-REPLAY",
-        provider: item.target_provider,
+        provider: item.target_node,
         message: `Replay initiated for DLQ item: ${item.id}`,
-        technical_context: `Replaying sync for ${item.repository_id} -> ${item.target_provider}`,
-        ui_message: `Replaying failed sync for ${item.repository_id}`,
+        technical_context: `Replaying sync for ${item.source_repo} -> ${item.target_node}`,
+        ui_message: `Replaying failed sync for ${item.source_repo}`,
         resolution: "Monitoring replay progress."
       });
       res.status(200).json({ message: "Replay initiated" });
@@ -2059,6 +2106,12 @@ async function startServer() {
 
   app.post("/api/v1/source/selection", authenticateToken, async (req, res) => {
     const { selectedRepos, targetProviderIds, entities } = req.body;
+    if (!Array.isArray(selectedRepos) || selectedRepos.length === 0) {
+      return res.status(400).json({ error: "selectedRepos must contain at least one repository." });
+    }
+    if (!Array.isArray(targetProviderIds) || targetProviderIds.length === 0) {
+      return res.status(400).json({ error: "targetProviderIds must contain at least one provider." });
+    }
     const selectedRepoDetails = selectedRepos.map((repo: any) => {
       return {
         id: repo.id,
@@ -2095,7 +2148,26 @@ async function startServer() {
       const result = await pool.query('SELECT * FROM providers WHERE id = $1', [providerId]);
       const provider = result.rows[0];
 
-      if (!provider) continue;
+      if (!provider) {
+        const missingProvider = {
+          provider: providerId,
+          repo: "*",
+          status: "failed",
+          message: "Target provider was not found",
+          detail: `No provider exists with ID ${providerId}`
+        };
+        provisionSummary.push(missingProvider);
+        await addLog({
+          level: "error",
+          code: "H-TARGET-MISSING",
+          provider: providerId,
+          message: `Target provider not found during repository selection: ${providerId}`,
+          technical_context: missingProvider.detail,
+          ui_message: "A selected target provider no longer exists",
+          resolution: "Refresh the provider list and select an available target."
+        });
+        continue;
+      }
 
       const decryptedToken = decrypt(provider.token);
 
@@ -2106,10 +2178,23 @@ async function startServer() {
           provider: provider.name,
           repo: repo.name,
           status: provisionResult.status,
-          message: provisionResult.message
+          message: provisionResult.message,
+          detail: provisionResult.error
         });
 
-        if (provisionResult.status !== 'failed') {
+        if (provisionResult.status === 'failed') {
+          await addLog({
+            level: "error",
+            code: "H-TARGET-FAIL",
+            provider: provider.type,
+            message: `Target provisioning failed for ${repo.name} on ${provider.name}`,
+            technical_context: provisionResult.error || provisionResult.message,
+            ui_message: `Could not provision ${repo.name} on ${provider.name}`,
+            resolution: provisionResult.message.includes('Auth error')
+              ? "Replace the provider token and verify repository and organization permissions."
+              : "Review the provider response and target namespace permissions."
+          });
+        } else {
           // Add to sync matrix if not already there
           const existingSyncRes = await pool.query('SELECT * FROM sync_matrix WHERE source_repo = $1', [repo.name]);
           const existingSync = existingSyncRes.rows[0];
@@ -2154,9 +2239,27 @@ async function startServer() {
       }
     }
 
-    res.json({ 
+    const succeeded = provisionSummary.filter(item => item.status !== 'failed').length;
+    const failed = provisionSummary.length - succeeded;
+    await addLog({
+      level: failed > 0 ? "error" : "info",
+      code: failed > 0 ? "H-SELECTION-PARTIAL" : "H-SELECTION-OK",
+      provider: sourceProvider?.type || "system",
+      message: `Repository selection completed: ${succeeded} succeeded, ${failed} failed`,
+      technical_context: JSON.stringify(provisionSummary),
+      ui_message: failed > 0
+        ? `Mirror provisioning failed for ${failed} target${failed === 1 ? '' : 's'}`
+        : `Configured ${succeeded} mirror target${succeeded === 1 ? '' : 's'}`,
+      resolution: failed > 0
+        ? "Open the provisioning summary and error logs for provider-specific details."
+        : "No action required."
+    });
+
+    res.status(succeeded === 0 ? 422 : failed > 0 ? 207 : 200).json({
       message: "Selection saved and targets provisioned", 
       count: selectedRepos.length,
+      succeeded,
+      failed,
       summary: provisionSummary
     });
   });

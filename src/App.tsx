@@ -1161,12 +1161,27 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
           entities: syncEntities // Global default
         })
       });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (Array.isArray(data.summary)) {
         setProvisioningSummary(data.summary);
-        addToast('Mirroring Initiated', `${selectedRepos.size} repositories are now being provisioned and synced.`, 'success');
+      }
+      if (res.ok) {
+        await onRefresh();
+        const failed = Number(data.failed || 0);
+        addToast(
+          failed > 0 ? 'Provisioning Partially Completed' : 'Mirroring Configured',
+          failed > 0
+            ? `${data.succeeded || 0} targets configured; ${failed} failed. Review the provisioning summary.`
+            : `${data.succeeded || selectedRepos.size} mirror targets were configured.`,
+          failed > 0 ? 'warning' : 'success'
+        );
       } else {
-        addToast('Provisioning Failed', 'The server encountered an error during target setup.', 'error');
+        const firstFailure = data.summary?.find((item: any) => item.status === 'failed');
+        addToast(
+          'Provisioning Failed',
+          firstFailure?.detail || firstFailure?.message || data.error || `The server returned HTTP ${res.status}.`,
+          'error'
+        );
       }
     } catch (err) {
       addToast('Connection Error', 'Failed to communicate with the Hydrozoa backend.', 'error');
@@ -1848,7 +1863,12 @@ function AppContent() {
         setIsAddingProvider(false);
         addToast('Node Registered', `Successfully connected ${newProvider.name} to the network.`, 'success');
       } else {
-        addToast('Registration Failed', 'Server rejected the provider credentials.', 'error');
+        const error = await res.json().catch(() => ({}));
+        addToast(
+          'Registration Failed',
+          error.error || error.detail || `Provider validation returned HTTP ${res.status}.`,
+          'error'
+        );
       }
     } catch (err) {
       addToast('System Error', 'Could not register new node.', 'error');
@@ -2269,7 +2289,7 @@ function AppContent() {
             >
               <SourceSelection 
                 providers={providers} 
-                onRefresh={handleRefreshRepos} 
+                onRefresh={fetchData}
                 namespaces={namespaces} 
                 setNamespaces={setNamespaces} 
                 setProvisioningSummary={setProvisioningSummary}
