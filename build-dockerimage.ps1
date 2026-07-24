@@ -8,7 +8,7 @@ and uses it as the Docker image tag. The image is also tagged as latest when
 -TagLatest is supplied.
 
 .PARAMETER ImageName
-Docker image repository/name. Defaults to hydrozoa.
+Docker image repository/name. Defaults to skgens/hydrozoa.
 
 .PARAMETER Dockerfile
 Path to the Dockerfile. Defaults to Dockerfile in the repository root.
@@ -18,6 +18,9 @@ Docker build context. Defaults to the repository root.
 
 .PARAMETER TagLatest
 Also tags the image as <ImageName>:latest.
+
+.PARAMETER Push
+Pushes the versioned tag and, when requested, the latest tag.
 
 .PARAMETER BuildArgument
 Additional Docker build arguments in NAME=VALUE format.
@@ -35,7 +38,7 @@ Additional Docker build arguments in NAME=VALUE format.
 param(
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string]$ImageName = 'hydrozoa',
+    [string]$ImageName = 'skgens/hydrozoa',
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
@@ -47,6 +50,9 @@ param(
 
     [Parameter()]
     [switch]$TagLatest,
+
+    [Parameter()]
+    [switch]$Push,
 
     [Parameter()]
     [ValidateNotNull()]
@@ -123,11 +129,26 @@ if ($PSCmdlet.ShouldProcess($versionedTag, "Build Docker image from '$dockerfile
     }
 }
 
+if ($Push -and $PSCmdlet.ShouldProcess($versionedTag, 'Push Docker image')) {
+    & docker push $versionedTag
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker push failed for '$versionedTag' with exit code $LASTEXITCODE."
+    }
+
+    if ($TagLatest) {
+        & docker push "${ImageName}:latest"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Docker push failed for '${ImageName}:latest' with exit code $LASTEXITCODE."
+        }
+    }
+}
+
 [PSCustomObject]@{
     Image       = $ImageName
     Version     = $version
     Tag         = $versionedTag
     LatestTag   = if ($TagLatest) { "${ImageName}:latest" } else { $null }
+    Pushed      = [bool]$Push
     Dockerfile  = $dockerfilePath
     BuildContext = $contextPath
 }

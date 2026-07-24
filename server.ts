@@ -1306,7 +1306,11 @@ setTimeout(runSyncEngine, 5000);
 async function startServer() {
 
   const app = express();
-  const PORT = 3000;
+  const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
+
+  if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+    throw new Error(`Invalid PORT value: ${process.env.PORT}`);
+  }
 
   app.use(express.json());
 

@@ -47,13 +47,16 @@ npm start
 
 ### 3. Docker
 ```bash
-# Using the helper script
-chmod +x docker/docker-run.sh
-./docker/docker-run.sh
+# Pull and run a versioned release from Docker Hub
+docker run --detach --publish 3000:3000 --env-file .env \
+  skgens/hydrozoa:1.2.2
 
-# OR using Docker Compose
-docker-compose -f docker/docker-compose.yaml up -d
+# Or use the supplied Compose definition
+HYDROZOA_VERSION=1.2.2 docker compose -f docker/docker-compose.yaml up -d
 ```
+
+See the [deployment guide](docs/deployment.md) for Cloud Run, Azure Container
+Apps, AWS ECS, DigitalOcean App Platform, Render, Railway, and Kubernetes.
 
 ### 4. Kubernetes
 ```bash

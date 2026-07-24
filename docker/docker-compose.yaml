@@ -1,14 +1,11 @@
-version: '3.8'
-
 services:
   hydrozoa:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    image: skgens/hydrozoa:${HYDROZOA_VERSION:-latest}
     ports:
       - "3000:3000"
     env_file:
       - ../.env
-    restart: always
+    restart: unless-stopped
     environment:
-      - NODE_ENV=production
+      NODE_ENV: production
+      PORT: 3000

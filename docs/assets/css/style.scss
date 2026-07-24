@@ -198,16 +198,21 @@ blockquote p { margin: 0; }
 code,pre { font-family: "JetBrains Mono",monospace; }
 :not(pre) > code { padding: .18em .42em; border: 1px solid $line; border-radius: 5px; background: rgba(255,255,255,.04); color: #b9ece8; font-size: .86em; }
 div.highlighter-rouge { margin: 24px 0; }
-pre.highlight { position: relative; margin: 0; padding: 22px; overflow-x: auto; border: 1px solid $line; border-radius: 11px; background: #050c12 !important; color: #cfdae1; font-size: 12px; line-height: 1.75; }
-.highlight { background: transparent; }
-.highlight .c,.highlight .c1,.highlight .cm { color: #526b79; font-style: italic; }
-.highlight .k,.highlight .kd,.highlight .kn,.highlight .kp,.highlight .kr { color: #c792ea; }
-.highlight .s,.highlight .s1,.highlight .s2,.highlight .sb { color: #a5e6a1; }
-.highlight .na,.highlight .nb,.highlight .nc,.highlight .nf { color: #82d9ff; }
-.highlight .m,.highlight .mi,.highlight .mf { color: #f5c97b; }
-.highlight .o,.highlight .p { color: #8ca0af; }
-.highlight .nt { color: #f78c8c; }
-.highlight .nv,.highlight .vi { color: #f2b7df; }
+.highlighter-rouge,
+.highlighter-rouge .highlight,
+.highlighter-rouge pre.highlight {
+  background: #050c12 !important;
+}
+pre.highlight { position: relative; margin: 0; padding: 22px; overflow-x: auto; border: 1px solid $line; border-radius: 11px; color: #b8c7d0 !important; font-size: 12px; line-height: 1.75; }
+.highlighter-rouge .highlight .err { color: #d48686 !important; background: transparent !important; }
+.highlighter-rouge .highlight .c,.highlighter-rouge .highlight .c1,.highlighter-rouge .highlight .cm { color: #526b79 !important; font-style: italic; }
+.highlighter-rouge .highlight .k,.highlighter-rouge .highlight .kd,.highlighter-rouge .highlight .kn,.highlighter-rouge .highlight .kp,.highlighter-rouge .highlight .kr { color: #b79ad8 !important; }
+.highlighter-rouge .highlight .s,.highlighter-rouge .highlight .s1,.highlighter-rouge .highlight .s2,.highlighter-rouge .highlight .sb { color: #8fc7a7 !important; }
+.highlighter-rouge .highlight .na,.highlighter-rouge .highlight .nb,.highlighter-rouge .highlight .nc,.highlighter-rouge .highlight .nf { color: #78b7cf !important; }
+.highlighter-rouge .highlight .m,.highlighter-rouge .highlight .mi,.highlighter-rouge .highlight .mf { color: #d4ad75 !important; }
+.highlighter-rouge .highlight .o,.highlighter-rouge .highlight .p { color: #8296a3 !important; }
+.highlighter-rouge .highlight .nt { color: #d48686 !important; }
+.highlighter-rouge .highlight .nv,.highlighter-rouge .highlight .vi { color: #c99dbd !important; }
 .copy-code { position: absolute; top: 10px; right: 10px; padding: 6px 9px; border: 1px solid $line; border-radius: 6px; background: $panel; color: #8296a3; font: 600 8px/1 "JetBrains Mono"; text-transform: uppercase; cursor: pointer; }
 
 .api-intro { display: grid; grid-template-columns: 1fr auto; gap: 30px; align-items: end; margin: 80px 0 55px; }
