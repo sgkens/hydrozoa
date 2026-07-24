@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800">
+  <rect width="1280" height="800" rx="20" fill="#071019"/>
+  <rect x="28" y="28" width="1224" height="744" rx="14" fill="#09141e" stroke="#233746"/>
+  <rect x="28" y="28" width="1224" height="54" rx="14" fill="#101f2c"/><circle cx="60" cy="55" r="7" fill="#fb7185"/><circle cx="84" cy="55" r="7" fill="#fbbf24"/><circle cx="108" cy="55" r="7" fill="#2dd4bf"/>
+  <rect x="58" y="120" width="170" height="26" rx="5" fill="#c084fc" opacity=".2"/><text x="75" y="138" fill="#d8b4fe" font-family="monospace" font-size="14">POST</text>
+  <text x="248" y="139" fill="#dce7ef" font-family="monospace" font-size="17">/api/v1/sync/manual/:id</text>
+  <line x1="58" y1="174" x2="1222" y2="174" stroke="#233746"/>
+  <g font-family="monospace" font-size="16"><text x="76" y="225" fill="#526b79">Authorization</text><text x="250" y="225" fill="#a5e6a1">Bearer $HYDROZOA_TOKEN</text><text x="76" y="276" fill="#526b79">Content-Type</text><text x="250" y="276" fill="#82d9ff">application/json</text></g>
+  <rect x="58" y="322" width="1164" height="390" rx="10" fill="#050c12" stroke="#1b2e3b"/>
+  <g font-family="monospace" font-size="17"><text x="90" y="370" fill="#8ca0af">{</text><text x="122" y="412" fill="#82d9ff">"message"</text><text x="252" y="412" fill="#8ca0af">:</text><text x="272" y="412" fill="#a5e6a1">"Manual sync initiated"</text><text x="122" y="454" fill="#82d9ff">"item"</text><text x="210" y="454" fill="#8ca0af">: {</text><text x="155" y="496" fill="#82d9ff">"status"</text><text x="265" y="496" fill="#8ca0af">:</text><text x="286" y="496" fill="#a5e6a1">"syncing"</text><text x="155" y="538" fill="#82d9ff">"progress"</text><text x="285" y="538" fill="#8ca0af">:</text><text x="307" y="538" fill="#f5c97b">0</text><text x="122" y="580" fill="#8ca0af">}</text><text x="90" y="622" fill="#8ca0af">}</text></g>
+  <text x="640" y="755" text-anchor="middle" fill="#5f7484" font-family="monospace" font-size="13">HEADLESS CONTROL · SCREENSHOT COMING SOON</text>
+</svg>

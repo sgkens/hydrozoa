@@ -2,8 +2,17 @@ title: Hydrozoa
 description: A self-hosted Git Multipoint Mirror Agent for synchronizing repositories, issues, and metadata across multiple providers with a bioluminescent deep-sea aesthetic.
 baseurl: ""
 url: ""
+repository_url: "https://gitlab.com/sgkens/hydrozoa"
+permalink: pretty
 
 theme: minima # We'll customize this heavily or use it as a base
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    block:
+      line_numbers: false
 plugins:
   - jekyll-feed
   - jekyll-seo-tag

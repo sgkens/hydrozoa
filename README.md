@@ -122,3 +122,16 @@ For further assistance, please open an issue in the GitLab repository or contact
 
 ## **License**
 Distributed under the MIT License. See `LICENSE` for more information.
+
+---
+
+## **Technology acknowledgements**
+
+Hydrozoa uses Bun, React, Vite, Express, PostgreSQL, Tailwind CSS, Motion,
+ApexCharts, Jekyll, Kramdown, and Rouge. Interface icon geometry comes from
+[Lucide](https://lucide.dev/), and technology/provider marks come from
+[Simple Icons](https://simpleicons.org/).
+
+Provider names and marks remain the property of their respective owners. See
+the [documentation acknowledgements](docs/acknowledgements.md) for component
+roles and license references.

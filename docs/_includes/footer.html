@@ -1,27 +1,27 @@
-<footer class="site-footer h-card">
-  <data class="u-url" href="{{ "/" | relative_url }}"></data>
-  <div class="wrapper">
-    <div class="footer-col-wrapper">
-      <div class="footer-col footer-col-1">
-        <ul class="contact-list">
-          <li class="p-name">
-            {%- if site.author -%}
-              {{ site.author | escape }}
-            {%- else -%}
-              {{ site.title | escape }}
-            {%- endif -%}
-          </li>
-          {%- if site.email -%}
-          <li><a class="u-email" href="mailto:{{ site.email }}">{{ site.email }}</a></li>
-          {%- endif -%}
-        </ul>
-      </div>
-      <div class="footer-col footer-col-2">
-        {%- include social.html -%}
-      </div>
-      <div class="footer-col footer-col-3">
-        <p>{{ site.description | escape }}</p>
-      </div>
+<footer class="site-footer">
+  <div class="wrapper footer-grid">
+    <div>
+      <a class="site-title footer-brand" href="{{ "/" | relative_url }}">
+        <img src="{{ "/assets/images/logo.svg" | relative_url }}" alt="" class="logo">
+        <span class="brand-lockup"><strong>Hydrozoa</strong><small>Repository mirror engine</small></span>
+      </a>
+      <p>Self-hosted synchronization across Git providers, operated through the dashboard or REST API.</p>
     </div>
+    <nav aria-label="Documentation">
+      <strong>Documentation</strong>
+      <a href="{{ "/api-reference" | relative_url }}">API reference</a>
+      <a href="{{ "/installation" | relative_url }}">Installation</a>
+      <a href="{{ "/pitfalls" | relative_url }}">Pitfalls</a>
+    </nav>
+    <nav aria-label="Project">
+      <strong>Project</strong>
+      <a href="{{ "/acknowledgements" | relative_url }}">Technologies</a>
+      <a href="{{ "/license" | relative_url }}">License</a>
+      <a href="{{ site.repository_url | default: "https://gitlab.com/sgkens/hydrozoa" }}">Source repository</a>
+    </nav>
+  </div>
+  <div class="wrapper footer-base">
+    <span>Hydrozoa documentation</span>
+    <span>MIT licensed</span>
   </div>
 </footer>

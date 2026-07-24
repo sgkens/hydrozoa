@@ -1,31 +1,64 @@
 ---
 layout: default
 title: Features
+description: Hydrozoa capabilities from provider discovery through mirror recovery.
 ---
 
-# Features
+# Mirror operations without provider lock-in
 
-Hydrozoa is more than just a mirror; it's a complete synchronization suite.
+Hydrozoa separates the source repository graph from its synchronization targets, allowing one control plane to operate across hosted and self-managed Git services.
 
-## Core Features
+## Mirror matrix
 
-- **Multipoint Mirroring**: Sync a single source repository to multiple target providers simultaneously.
-- **Bioluminescent Dashboard**: A visually stunning, real-time telemetry dashboard for monitoring sync status, performance, and logs.
-- **Self-Hosted Control**: Full control over your synchronization logic, data, and security.
-- **Multi-Provider Support**: Seamless integration with GitHub, GitLab, and other Git providers.
-- **Automated Versioning**: Integrated semantic versioning for your build and release processes.
-- **Dead Letter Queue (DLQ)**: Robust error handling for failed sync attempts, allowing for easy retries and debugging.
+The synchronization matrix records each source repository, branch, interval, selected entity types, and every configured target. Operators can update matrix settings or trigger a run through the dashboard and REST API.
 
-## Advanced Capabilities
+| Capability | Behaviour |
+|---|---|
+| Multipoint targets | One source repository can synchronize to multiple target providers. |
+| Entity selection | Code, issues, milestones, releases, and metadata can be selected per repository. |
+| Scheduled operation | Each matrix item carries its own synchronization interval. |
+| Manual execution | An authenticated API request can immediately start a matrix item. |
 
-- **Bidirectional Sync**: (Optional) Keep repositories in sync across multiple sources and targets.
-- **Conflict Resolution**: Configurable strategies for resolving sync conflicts (e.g., `source_wins`, `target_wins`).
-- **Encryption**: Secure your sensitive data and API tokens with integrated encryption.
-- **Log Retention**: Configurable log retention policies to keep your system clean and performant.
-- **Concurrent Syncs**: Optimize performance by running multiple sync operations in parallel.
+## Provider discovery
 
-## Visual Telemetry
+Hydrozoa discovers accounts, organizations, groups, workspaces, and repositories through each provider API. GitHub, GitLab, Gitea, Forgejo, Gogs, and Bitbucket use provider-specific adapters while exposing a consistent Hydrozoa resource model.
 
-- **Sync Matrix**: A high-level view of all your synchronization targets and their real-time status.
-- **Performance Metrics**: Monitor sync duration, success rate, and data transfer volumes.
-- **System Terminal**: A live view of system logs and technical context for every operation.
+<div class="screenshot-frame">
+  <img src="{{ "/assets/images/screenshot-dashboard-placeholder.svg" | relative_url }}" alt="Placeholder for provider discovery screenshot">
+  <span>Screenshot placeholder · provider discovery</span>
+</div>
+
+## Telemetry
+
+The dashboard and API expose:
+
+- Provider reachability and latency.
+- Process memory, CPU, uptime, architecture, and runtime version.
+- Successful synchronization activity over the previous 24 hours.
+- Translated operator messages alongside technical context.
+- Per-target synchronization status and progress.
+
+## Failure recovery
+
+Failed operations are written to a dead-letter queue. An operator can inspect the failure and replay the item using `POST /api/v1/system/dlq/:id/replay`.
+
+## Security controls
+
+- Provider tokens use AES-256-GCM encryption at rest.
+- Administrative sessions use signed, expiring JWT bearer tokens.
+- GitHub webhook payloads support HMAC-SHA256 verification when a secret is configured.
+- Provider tokens returned by the API are masked.
+
+## Headless operation
+
+Every control-plane action used by the dashboard is available through the REST API. See the [API reference]({{ "/api-reference" | relative_url }}) for request bodies, parameters, responses, and error states.
+
+## Configuration reference
+
+| Setting | Type | Default | Purpose |
+|---|---|---:|---|
+| `sync_interval` | Integer | `15` | Minutes between scheduled synchronization runs. |
+| `log_retention_days` | Integer | `7` | Requested log retention window. |
+| `max_concurrent_syncs` | Integer | `5` | Requested concurrency limit. |
+| `bidirectional_sync` | Boolean | `false` | Enables bidirectional behavior when supported. |
+| `conflict_strategy` | String | `source_wins` | Conflict handling strategy. |
