@@ -1020,11 +1020,15 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     }
   }, [sourceProvider, namespaces.length]);
 
-  const fetchReposPage = async (nsId: string, page: number) => {
+  const fetchReposPage = async (namespace: Namespace, page: number) => {
+    const nsId = namespace.id;
     setIsLoadingRepos(prev => ({ ...prev, [nsId]: true }));
     try {
       const perPage = 50;
-      const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?page=${page}&per_page=${perPage}`);
+      const res = await fetchWithAuth(`/api/v1/source/namespaces/${encodeURIComponent(nsId)}/repos?page=${page}&per_page=${perPage}&type=${encodeURIComponent(namespace.type)}`);
+      if (!res.ok) {
+        throw new Error(`Repository discovery failed with status ${res.status}`);
+      }
       const data = await res.json();
       const newRepos = Array.isArray(data) ? data : [];
       
@@ -1041,20 +1045,24 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     }
   };
 
-  const toggleNamespace = async (nsId: string) => {
+  const toggleNamespace = async (namespace: Namespace) => {
+    const nsId = namespace.id;
     if (expandedNamespace === nsId) {
       setExpandedNamespace(null);
     } else {
       setExpandedNamespace(nsId);
       if (!repos[nsId]) {
-        await fetchReposPage(nsId, 1);
+        await fetchReposPage(namespace, 1);
       }
     }
   };
 
   const handleLoadMore = (e: React.MouseEvent, nsId: string) => {
     e.stopPropagation();
-    fetchReposPage(nsId, (repoPages[nsId] || 1) + 1);
+    const namespace = namespaces.find(ns => ns.id === nsId);
+    if (namespace) {
+      fetchReposPage(namespace, (repoPages[nsId] || 1) + 1);
+    }
   };
 
   const handleNamespaceCheck = async (nsId: string) => {
@@ -1068,14 +1076,16 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
       const nsRepos = repos[nsId] || [];
       nsRepos.forEach((r: Repository) => {
         if (!syncMatrix.some(item => item.source_repo === r.name)) {
-          newSelectedRepos.delete(r.id);
+          newSelectedRepos.delete(r.name);
         }
       });
     } else {
       newSelectedNamespaces.add(nsId);
       // Check all repos in this namespace
-      const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos`)).json();
-      nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.id));
+      const namespace = namespaces.find(ns => ns.id === nsId);
+      if (!namespace) return;
+      const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${encodeURIComponent(nsId)}/repos?type=${encodeURIComponent(namespace.type)}`)).json();
+      nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.name));
       if (!repos[nsId]) setRepos(prev => ({ ...prev, [nsId]: nsRepos }));
     }
 
@@ -1140,13 +1150,13 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
     setIsSaving(true);
     try {
-      // Find full repo objects for the selected IDs
-      const selectedRepoObjects = Array.from(selectedRepos).map(id => {
+      // Resolve the selected repository names back to their provider payloads.
+      const selectedRepoObjects = Array.from(selectedRepos).map(name => {
         for (const nsId in repos) {
-          const repo = repos[nsId].find(r => r.id === id);
+          const repo = repos[nsId].find(r => r.name === name);
           if (repo) return repo;
         }
-        return { id, name: `repo-${id}`, description: "Automated mirror target", visibility: 'private' as const }; // Fallback
+        return { id: name, name, description: "Automated mirror target", visibility: 'private' as const };
       });
 
       const res = await fetchWithAuth('/api/v1/source/selection', {
@@ -1354,7 +1364,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
         )}
         {namespaces.map((ns) => (
           <div key={ns.id} className="glass-card overflow-hidden border-white/5">
-            <div className="flex items-center justify-between p-4 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => toggleNamespace(ns.id)}>
+            <div className="flex items-center justify-between p-4 hover:bg-white/5 transition-colors cursor-pointer" onClick={() => toggleNamespace(ns)}>
               <div className="flex items-center gap-4">
                 <button 
                   onClick={(e) => { e.stopPropagation(); handleNamespaceCheck(ns.id); }}
@@ -1385,7 +1395,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                   <div className="p-4 space-y-2">
                     {repos[ns.id]?.map((repo) => {
                       const isSynced = syncMatrix.some(item => item.source_repo === repo.name || item.source_repo === `${ns.name}/${repo.name}`);
-                      const isSelected = selectedRepos.has(repo.id) || isSynced;
+                      const isSelected = selectedRepos.has(repo.name) || isSynced;
                       
                       return (
                         <div 
@@ -1394,7 +1404,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
                             "flex items-center justify-between p-3 rounded-lg transition-colors group cursor-pointer",
                             isSelected ? "bg-white/5 border border-white/5" : "hover:bg-white/5 border border-transparent"
                           )}
-                          onClick={() => handleRepoCheck(ns.id, repo.id)}
+                          onClick={() => handleRepoCheck(ns.id, repo.name)}
                         >
                           <div className="flex items-center gap-3">
                             <div className="p-1">
