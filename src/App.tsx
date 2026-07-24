@@ -171,6 +171,59 @@ const ToastContainer = ({ toasts, onRemove }: { toasts: Toast[], onRemove: (id: 
   </div>
 );
 
+const ConfirmationModal = ({
+  open,
+  title,
+  description,
+  confirmLabel,
+  isLoading = false,
+  onConfirm,
+  onCancel
+}: {
+  open: boolean;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  isLoading?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) => (
+  <AnimatePresence>
+    {open && (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirmation-title"
+      >
+        <motion.div
+          initial={{ scale: 0.94, opacity: 0, y: 16 }}
+          animate={{ scale: 1, opacity: 1, y: 0 }}
+          exit={{ scale: 0.96, opacity: 0, y: 8 }}
+          className="glass-card w-full max-w-md border-red-500/20 bg-[#0a0f1a] p-8 shadow-[0_0_60px_rgba(0,0,0,0.65)]"
+        >
+          <div className="mb-6 flex items-start gap-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-red-500/20 bg-red-500/10">
+              <AlertTriangle className="h-5 w-5 text-red-400" />
+            </div>
+            <div>
+              <h3 id="confirmation-title" className="text-xl font-black uppercase tracking-tighter text-white">{title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-slate-400">{description}</p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3">
+            <ReactionButton variant="ghost" onClick={onCancel} disabled={isLoading}>Cancel</ReactionButton>
+            <ReactionButton variant="danger" onClick={onConfirm} isLoading={isLoading}>{confirmLabel}</ReactionButton>
+          </div>
+        </motion.div>
+      </motion.div>
+    )}
+  </AnimatePresence>
+);
+
 const HydrozoaLogo = ({ className = "w-10 h-10" }: { className?: string }) => (
   <div className={cn("relative flex items-center justify-center", className)}>
     <motion.div
@@ -947,28 +1000,6 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
   const [isSaving, setIsSaving] = useState(false);
 
-  const handleDeleteMirror = async (e: React.MouseEvent, repoName: string) => {
-    e.stopPropagation();
-    if (!confirm(`Are you sure you want to permanently decommission mirroring for ${repoName}?`)) return;
-    
-    const existingSync = syncMatrix.find(m => m.source_repo === repoName);
-    if (!existingSync) return;
-
-    try {
-      const res = await fetchWithAuth(`/api/v1/system/sync-matrix/${existingSync.id}`, {
-        method: 'DELETE'
-      });
-      if (res.ok) {
-        addToast('Mirror Decommissioned', `${repoName} has been removed from the sync matrix.`, 'success');
-        onRefresh();
-      } else {
-        addToast('Action Failed', 'The server could not process the decommission request.', 'error');
-      }
-    } catch (err) {
-      addToast('System Error', 'Failed to communicate with the Hydrozoa backend.', 'error');
-    }
-  };
-
   // Initialize from syncMatrix
   useEffect(() => {
     if (syncMatrix.length > 0) {
@@ -1549,6 +1580,8 @@ function AppContent() {
   const [isAddingProvider, setIsAddingProvider] = useState(false);
   const [newProviderType, setNewProviderType] = useState('github');
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [providerPendingDeletion, setProviderPendingDeletion] = useState<Provider | null>(null);
+  const [isDeletingProvider, setIsDeletingProvider] = useState(false);
   const [passwordReset, setPasswordReset] = useState({ current: '', new: '', confirm: '' });
   const [passwordResetStatus, setPasswordResetStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [provisioningSummary, setProvisioningSummary] = useState<any[] | null>(null);
@@ -1668,20 +1701,26 @@ function AppContent() {
     }
   };
 
-  const handleDeleteProvider = async (id: string) => {
-    if (!confirm("Are you sure you want to decommission this node?")) return;
+  const handleDeleteProvider = async () => {
+    if (!providerPendingDeletion) return;
+    setIsDeletingProvider(true);
     try {
-      const res = await fetchWithAuth(`/api/v1/auth/providers/${id}`, {
+      const res = await fetchWithAuth(`/api/v1/auth/providers/${providerPendingDeletion.id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
-        setProviders(providers.filter(p => p.id !== id));
+        setProviders(providers.filter(p => p.id !== providerPendingDeletion.id));
+        await fetchData();
         addToast('Node Decommissioned', 'The provider has been successfully removed from the network.', 'success');
+        setProviderPendingDeletion(null);
       } else {
-        addToast('Action Failed', 'The server could not decommission this node.', 'error');
+        const error = await res.json().catch(() => ({}));
+        addToast('Action Failed', error.error || 'The server could not decommission this node.', 'error');
       }
     } catch (err) {
       addToast('System Error', 'Failed to communicate with the node management system.', 'error');
+    } finally {
+      setIsDeletingProvider(false);
     }
   };
 
@@ -2443,7 +2482,7 @@ function AppContent() {
                         <p className="text-xs text-slate-500 leading-relaxed">Removing this node will halt all active synchronizations and purge local cache. This action is irreversible.</p>
                         <ReactionButton 
                           onClick={() => {
-                            handleDeleteProvider(editingProvider.id);
+                            setProviderPendingDeletion(editingProvider);
                             setEditingProvider(null);
                           }}
                           variant="danger"
@@ -2915,6 +2954,17 @@ function AppContent() {
       </div>
       </div>
       <ToastContainer toasts={toasts} onRemove={removeToast} />
+      <ConfirmationModal
+        open={providerPendingDeletion !== null}
+        title={providerPendingDeletion?.isSource ? 'Delete source provider?' : 'Delete target provider?'}
+        description={providerPendingDeletion?.isSource
+          ? `Deleting ${providerPendingDeletion?.name} will remove its synchronization matrix entries. Provider credentials and configuration will be deleted.`
+          : `Deleting ${providerPendingDeletion?.name} will remove it from every synchronization target. Provider credentials and configuration will be deleted.`}
+        confirmLabel="Delete provider"
+        isLoading={isDeletingProvider}
+        onConfirm={handleDeleteProvider}
+        onCancel={() => setProviderPendingDeletion(null)}
+      />
     </div>
   );
 }

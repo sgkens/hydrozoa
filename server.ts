@@ -1747,6 +1747,10 @@ async function startServer() {
 
   app.post("/api/v1/auth/providers", authenticateToken, async (req, res) => {
     let { name, type, url, token, isSource, baseUrl, webhookSecret } = req.body;
+    name = typeof name === 'string' ? name.trim() : name;
+    type = typeof type === 'string' ? type.trim().toLowerCase() : type;
+    token = typeof token === 'string' ? token.trim() : token;
+    webhookSecret = typeof webhookSecret === 'string' ? webhookSecret.trim() : webhookSecret;
     
     // Support both 'url' and 'baseUrl' (frontend uses baseUrl)
     let effectiveUrl = url || baseUrl || (type === 'github' ? 'https://api.github.com' : (type === 'bitbucket' ? 'https://api.bitbucket.org' : null));
@@ -1916,23 +1920,64 @@ async function startServer() {
 
   app.delete("/api/v1/auth/providers/:id", authenticateToken, async (req, res) => {
     const { id } = req.params;
-    
-    const result = await pool.query('SELECT * FROM providers WHERE id = $1', [id]);
-    const deleted = result.rows[0];
-    if (deleted) {
-      await pool.query('DELETE FROM providers WHERE id = $1', [id]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query('SELECT * FROM providers WHERE id = $1 FOR UPDATE', [id]);
+      const deleted = result.rows[0];
+      if (!deleted) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: "Provider not found" });
+      }
+
+      let affectedMatrices = 0;
+      if (deleted.is_source) {
+        const matrixResult = await client.query('DELETE FROM sync_matrix WHERE source_provider = $1', [id]);
+        affectedMatrices = matrixResult.rowCount || 0;
+      } else {
+        const matrixResult = await client.query('SELECT id, targets FROM sync_matrix FOR UPDATE');
+        for (const matrix of matrixResult.rows) {
+          const targets = Array.isArray(matrix.targets) ? matrix.targets : [];
+          const remainingTargets = targets.filter((target: any) => target.provider_id !== id);
+          if (remainingTargets.length === targets.length) continue;
+          affectedMatrices += 1;
+          if (remainingTargets.length === 0) {
+            await client.query('DELETE FROM sync_matrix WHERE id = $1', [matrix.id]);
+          } else {
+            await client.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [
+              JSON.stringify(remainingTargets),
+              matrix.id
+            ]);
+          }
+        }
+      }
+
+      await client.query('DELETE FROM providers WHERE id = $1', [id]);
+      await client.query('COMMIT');
       await addLog({
         level: "warn",
         code: "H-PROV-DELETE",
         provider: deleted.id,
         message: `Provider node ${deleted.name} decommissioned`,
-        technical_context: `Removed from active provider pool`,
+        technical_context: `Removed from active provider pool; ${affectedMatrices} synchronization matrix entries updated`,
         ui_message: `Provider ${deleted.name} has been removed.`,
         resolution: "No action required."
       });
-      res.json({ message: "Provider deleted" });
-    } else {
-      res.status(404).json({ error: "Provider not found" });
+      res.json({ message: "Provider deleted", affectedMatrices });
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      await addLog({
+        level: "error",
+        code: "H-PROV-DELETE-FAIL",
+        provider: id,
+        message: `Provider deletion failed: ${id}`,
+        technical_context: err.message,
+        ui_message: "Provider deletion failed",
+        resolution: "Review the database error and retry the operation."
+      }).catch(() => undefined);
+      res.status(500).json({ error: "Provider deletion failed", detail: err.message });
+    } finally {
+      client.release();
     }
   });
 
@@ -2047,6 +2092,39 @@ async function startServer() {
     } catch (err) {
       sysLog.error(`Failed to update sync matrix: ${err}`);
       res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.delete("/api/v1/system/sync-matrix/:id", authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    try {
+      const result = await pool.query(
+        'DELETE FROM sync_matrix WHERE id = $1 RETURNING source_repo, source_provider',
+        [id]
+      );
+      const deleted = result.rows[0];
+      if (!deleted) return res.status(404).json({ error: "Sync item not found" });
+      await addLog({
+        level: "warn",
+        code: "H-SYNC-DELETE",
+        provider: deleted.source_provider,
+        message: `Synchronization matrix item deleted: ${deleted.source_repo}`,
+        technical_context: `Matrix ID: ${id}`,
+        ui_message: `Mirror removed: ${deleted.source_repo}`,
+        resolution: "Re-select the repository to configure it again."
+      });
+      res.json({ message: "Sync item deleted", id });
+    } catch (err: any) {
+      await addLog({
+        level: "error",
+        code: "H-SYNC-DELETE-FAIL",
+        provider: "system",
+        message: `Synchronization matrix deletion failed: ${id}`,
+        technical_context: err.message,
+        ui_message: "Mirror deletion failed",
+        resolution: "Review the database error and retry the operation."
+      }).catch(() => undefined);
+      res.status(500).json({ error: "Sync item deletion failed", detail: err.message });
     }
   });
 
