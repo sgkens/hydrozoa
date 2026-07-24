@@ -1545,6 +1545,7 @@ async function startServer() {
 
   app.get("/api/v1/source/namespaces/:id/repos", authenticateToken, async (req, res) => {
     const { id } = req.params;
+    const namespaceType = String(req.query.type || '').toLowerCase();
     const page = parseInt(req.query.page as string) || 1;
     const perPage = parseInt(req.query.per_page as string) || 100;
     
@@ -1566,7 +1567,9 @@ async function startServer() {
       
       if (sourceProvider.type === 'github') {
         headers['Authorization'] = `token ${token}`;
-        const url = `${baseUrl}/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=${perPage}&page=${page}`;
+        const url = namespaceType === 'organization'
+          ? `${baseUrl}/orgs/${encodeURIComponent(id)}/repos?per_page=${perPage}&page=${page}`
+          : `${baseUrl}/user/repos?affiliation=owner&per_page=${perPage}&page=${page}`;
         sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
 
         const reposRes = await trackedFetch(sourceProvider.id, url, { headers });
