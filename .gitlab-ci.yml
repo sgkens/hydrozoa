@@ -27,6 +27,13 @@ verify_docs:
       - _site/
     expire_in: 1 week
 
+verify_cli:
+  stage: verify
+  script:
+    - cd cli
+    - bun test
+    - bun pm pack --dry-run
+
 build_image:
   stage: package
   services:
@@ -62,5 +69,20 @@ publish_image:
     - docker push "$DOCKER_IMAGE:$BUILD_VERSION"
     - docker tag "$DOCKER_IMAGE:$BUILD_VERSION" "$DOCKER_IMAGE:latest"
     - docker push "$DOCKER_IMAGE:latest"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+
+publish_cli:
+  stage: publish
+  before_script:
+    - test -n "$NPM_TOKEN"
+    - echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$CI_PROJECT_DIR/.npmrc"
+  script:
+    - export BUILD_VERSION="$(pwsh -NoProfile -Command '. ./tools/Get-ConventionalCommitVersion.ps1; (Get-ConventionalCommitVersion).Version')"
+    - cd cli
+    - bun pm pkg set "version=$BUILD_VERSION"
+    - bun publish
+  after_script:
+    - rm -f "$CI_PROJECT_DIR/.npmrc"
   rules:
     - if: '$CI_COMMIT_TAG'

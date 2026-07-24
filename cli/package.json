@@ -1,0 +1,29 @@
+{
+  "name": "@skgens/hydrozoa",
+  "version": "0.1.0",
+  "description": "Command-line client for the Hydrozoa headless API",
+  "type": "module",
+  "bin": {
+    "hydrozoa": "./hydrozoa.js"
+  },
+  "files": [
+    "hydrozoa.js",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": [
+    "hydrozoa",
+    "git",
+    "mirror",
+    "cli"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

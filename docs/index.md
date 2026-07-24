@@ -11,7 +11,7 @@ description: Operate multi-provider Git repository mirrors through a dashboard o
     <p class="lead">Hydrozoa coordinates code, issue, milestone, release, and metadata synchronization across GitHub, GitLab, Gitea, Forgejo, Gogs, and Bitbucket.</p>
     <div class="hero-actions">
       <a href="{{ "/installation" | relative_url }}" class="btn">Deploy Hydrozoa</a>
-      <a href="{{ "/api-reference" | relative_url }}" class="btn secondary">Explore the API</a>
+      <a href="{{ "/cli" | relative_url }}" class="btn secondary">Use the CLI</a>
     </div>
     <dl class="hero-stats" aria-label="Project capabilities">
       <div><dt>6</dt><dd>Git providers</dd></div>

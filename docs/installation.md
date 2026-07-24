@@ -32,8 +32,6 @@ Before you dive into the deep sea with Hydrozoa, ensure you have the following:
    ```bash
    cp .env.example .env
    ```
-   *Note: Ensure `GEMINI_API_KEY` is set if you're using AI-assisted features.*
-
 4. **Run in Development Mode**:
    ```bash
    npm run dev

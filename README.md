@@ -58,6 +58,17 @@ HYDROZOA_VERSION=1.2.2 docker compose -f docker/docker-compose.yaml up -d
 See the [deployment guide](docs/deployment.md) for Cloud Run, Azure Container
 Apps, AWS ECS, DigitalOcean App Platform, Render, Railway, and Kubernetes.
 
+### 4. CLI
+
+```bash
+bunx @skgens/hydrozoa login --url http://localhost:3000 \
+  --email admin@hydrozoa.io --password "$HYDROZOA_PASSWORD"
+bunx @skgens/hydrozoa status
+bunx @skgens/hydrozoa sync --matrix production
+```
+
+See the [CLI reference](docs/cli.md) for commands and CI configuration.
+
 ### 4. Kubernetes
 ```bash
 # Apply the manifests
