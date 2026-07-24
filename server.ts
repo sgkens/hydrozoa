@@ -35,6 +35,7 @@ const colors = {
   yellow: "\x1b[33m",
   green: "\x1b[32m",
   red: "\x1b[31m",
+  black: "\x1b[30m",
   gray: "\x1b[90m",
   bgGreen: "\x1b[42m",
   bgRed: "\x1b[41m",
@@ -43,13 +44,15 @@ const colors = {
   white: "\x1b[37m"
 };
 
+const getTimestamp = () => `${colors.gray}[${new Date().toLocaleTimeString()}]${colors.reset}`;
+
 const sysLog = {
-  info: (msg: string) => console.log(`${colors.bgBlue}${colors.white} INFO ${colors.reset} ${msg}`),
-  success: (msg: string) => console.log(`${colors.bgGreen}${colors.white}  OK  ${colors.reset} ${msg}`),
-  warn: (msg: string) => console.log(`${colors.bgYellow}${colors.white} WARN ${colors.reset} ${msg}`),
-  error: (msg: string) => console.error(`${colors.bgRed}${colors.white} FAIL ${colors.reset} ${msg}`),
-  startup: (msg: string) => console.log(`${colors.magenta}${colors.bright}${msg}${colors.reset}`),
-  debug: (msg: string) => console.log(`${colors.gray}${colors.dim}🔍 ${msg}${colors.reset}`)
+  info: (msg: string) => console.log(`${getTimestamp()} ${colors.bgBlue}${colors.white} INFO ${colors.reset} ${msg}`),
+  success: (msg: string) => console.log(`${getTimestamp()} ${colors.bgGreen}${colors.white}  OK  ${colors.reset} ${msg}`),
+  warn: (msg: string) => console.log(`${getTimestamp()} ${colors.bgYellow}${colors.black} WARN ${colors.reset} ${msg}`),
+  error: (msg: string) => console.error(`${getTimestamp()} ${colors.bgRed}${colors.white} FAIL ${colors.reset} ${msg}`),
+  startup: (msg: string) => console.log(`${getTimestamp()} ${colors.magenta}${colors.bright}🚀 ${msg}${colors.reset}`),
+  debug: (msg: string) => console.log(`${getTimestamp()} ${colors.gray}${colors.dim}🔍 ${msg}${colors.reset}`)
 };
 
 process.on('uncaughtException', (err) => {
@@ -409,6 +412,7 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
     }
   }
 
+  sysLog.info(`Provisioning target: ${repoName} on ${provider.name} (${provider.type})`);
   let baseUrl = provider.url.replace(/\/$/, '');
   if (type === 'github' && (baseUrl === 'https://github.com' || baseUrl === 'http://github.com')) {
     baseUrl = 'https://api.github.com';
@@ -540,12 +544,13 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
     }
 
     if (createRes && createRes.ok) {
+      sysLog.success(`Provisioned target repo: ${fullName} on ${provider.name}`);
       await addLog({
         level: "info",
         code: "H-TARGET-SUCCESS",
         provider: provider.type,
         message: `Successfully created target repository '${fullName}' on ${provider.name}`,
-        technical_context: `Creation successful for ${fullName}`,
+        technical_context: `Creation successful for ${fullName}. API: ${createRes.status}`,
         ui_message: `Provisioned repository: ${fullName}`,
         resolution: "Repository is now ready for mirroring."
       });
@@ -574,15 +579,16 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
 
       return { status: 'created', message: `Repository ${fullName} created` };
     } else {
-      const errText = createRes ? await createRes.text() : "Unknown error";
+      const errText = createRes ? await createRes.text() : "No response from provider";
+      sysLog.error(`Provisioning failed for ${fullName} on ${provider.name}: ${errText}`);
       await addLog({
         level: "error",
         code: "H-TARGET-FAIL",
         provider: provider.type,
         message: `Failed to create target repository '${fullName}' on ${provider.name}`,
-        technical_context: `API error: ${errText}`,
+        technical_context: `API status: ${createRes?.status || 'ERR'}. Error: ${errText}. Payload: { name: ${name}, desc: ${finalDescription} }`,
         ui_message: `Failed to provision repository: ${fullName}`,
-        resolution: "Check provider permissions and quota."
+        resolution: "Check description for control characters and verify provider permissions."
       });
       return { status: 'failed', message: `Failed to create repository ${fullName}`, error: errText };
     }
@@ -708,7 +714,7 @@ async function syncIssues(source: any, target: any, repoName: string, sourceToke
 
       const title = issue.title;
       const body = source.type.toLowerCase() === "github" ? issue.body : (issue.description || issue.body);
-      
+
       // Resolve milestone
       let targetMilestoneId = null;
       if (issue.milestone && milestoneMap) {
@@ -1167,6 +1173,7 @@ async function processSyncItem(item: any) {
 
     const targetToken = decrypt(targetProvider.token);
     const syncStart = Date.now();
+    sysLog.info(`Sync starting: ${item.source_repo} -> ${targetProvider.name} (Entities: ${entities.join(', ')})`);
 
     try {
       // Step 1: Forward Sync (Source -> Target)
@@ -1174,16 +1181,20 @@ async function processSyncItem(item: any) {
       targetRef.progress = 10;
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
-      if (entities.includes('code')) await syncCode(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
-      
+      if (entities.includes('code')) {
+        sysLog.debug(`[${item.source_repo}] Pushing code...`);
+        await syncCode(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      }
+
       let milestoneMap = {};
       if (entities.includes('milestones')) {
+        sysLog.debug(`[${item.source_repo}] Mapping milestones...`);
         milestoneMap = await syncMilestones(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
       }
 
       // Step 2: Bidirectional Sync (Target -> Source) if enabled
       if (settings?.bidirectional_sync) {
-        sysLog.info(`Bidirectional sync active for ${item.source_repo}. Performing reverse sync...`);
+        sysLog.info(`[${item.source_repo}] Reverse sync active.`);
         let revMilestoneMap = {};
         if (entities.includes('milestones')) {
           revMilestoneMap = await syncMilestones(targetProvider, sourceProvider, item.source_repo, targetToken, sourceToken);
@@ -1196,10 +1207,19 @@ async function processSyncItem(item: any) {
       targetRef.progress = 60;
       await pool.query('UPDATE sync_matrix SET targets = $1 WHERE id = $2', [JSON.stringify(item.targets), item.id]);
 
-      if (entities.includes('issues')) await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken, milestoneMap);
-      if (entities.includes('releases')) await syncReleases(sourceProvider, targetProvider, item.source_repo, targetToken, sourceToken);
-      if (entities.includes('snippets')) await syncSnippets(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
-      
+      if (entities.includes('issues')) {
+        sysLog.debug(`[${item.source_repo}] Syncing issues...`);
+        await syncIssues(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken, milestoneMap);
+      }
+      if (entities.includes('releases')) {
+        sysLog.debug(`[${item.source_repo}] Syncing releases...`);
+        await syncReleases(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      }
+      if (entities.includes('snippets')) {
+        sysLog.debug(`[${item.source_repo}] Syncing snippets...`);
+        await syncSnippets(sourceProvider, targetProvider, item.source_repo, sourceToken, targetToken);
+      }
+
       const durationSeconds = Math.floor((Date.now() - syncStart) / 1000);
       const durationStr = `${durationSeconds}s`;
 
@@ -1211,6 +1231,8 @@ async function processSyncItem(item: any) {
         'UPDATE sync_matrix SET targets = $1, last_sync_duration = $2 WHERE id = $3', 
         [JSON.stringify(item.targets), durationStr, item.id]
       );
+      
+      sysLog.success(`Sync finished: ${item.source_repo} -> ${targetProvider.name} (${durationStr})`);
       
       await addLog({
         level: "info",
