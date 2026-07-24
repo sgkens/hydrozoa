@@ -1609,6 +1609,7 @@ async function startServer() {
 
   app.get("/api/v1/source/namespaces/:id/repos", authenticateToken, async (req, res) => {
     const { id } = req.params;
+    const namespaceType = typeof req.query.type === 'string' ? req.query.type.toLowerCase() : '';
     const page = parseInt(req.query.page as string) || 1;
     const perPage = parseInt(req.query.per_page as string) || 100;
     
@@ -1630,7 +1631,8 @@ async function startServer() {
       
       if (sourceProvider.type === 'github') {
         headers['Authorization'] = `token ${token}`;
-        const url = `${baseUrl}/${id.includes('-') ? 'orgs' : 'users'}/${id}/repos?per_page=${perPage}&page=${page}`;
+        const scope = namespaceType === 'organization' ? 'orgs' : 'users';
+        const url = `${baseUrl}/${scope}/${encodeURIComponent(id)}/repos?per_page=${perPage}&page=${page}`;
         sysLog.info(`Fetching GitHub repos for ${id} from ${url}`);
 
         const reposRes = await trackedFetch(sourceProvider.id, url, { headers });
@@ -1656,9 +1658,11 @@ async function startServer() {
 
       if (sourceProvider.type.includes('gitlab')) {
         headers['Private-Token'] = token;
-        const url = id.startsWith('group-') 
-          ? `${baseUrl}/api/v4/groups/${id.replace('group-', '')}/projects?per_page=${perPage}&page=${page}`
-          : `${baseUrl}/api/v4/projects?owned=true&per_page=${perPage}&page=${page}`;
+        const isGroup = namespaceType === 'group' || id.startsWith('group-');
+        const namespaceId = id.replace(/^(user|group)-/, '');
+        const url = isGroup
+          ? `${baseUrl}/api/v4/groups/${encodeURIComponent(namespaceId)}/projects?include_subgroups=false&per_page=${perPage}&page=${page}`
+          : `${baseUrl}/api/v4/users/${encodeURIComponent(namespaceId)}/projects?per_page=${perPage}&page=${page}`;
         
         sysLog.info(`Fetching GitLab projects for ${id} from ${url}`);
 
@@ -1670,7 +1674,12 @@ async function startServer() {
           return res.status(hydrozoaStatus).json({ error: "GitLab Projects API failed", detail: errText });
         }
         const reposData = await reposRes.json();
-        const safeReposData = Array.isArray(reposData) ? reposData : [];
+        const safeReposData = (Array.isArray(reposData) ? reposData : []).filter((project: any) => {
+          const projectNamespaceId = String(project.namespace?.id ?? '');
+          const projectNamespaceKind = String(project.namespace?.kind ?? '').toLowerCase();
+          return projectNamespaceId === namespaceId
+            && (isGroup ? projectNamespaceKind === 'group' : projectNamespaceKind === 'user');
+        });
         
         sysLog.success(`Found ${safeReposData.length} projects for GitLab namespace ${id}`);
 

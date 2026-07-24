@@ -1051,11 +1051,12 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     }
   }, [sourceProvider, namespaces.length]);
 
-  const fetchReposPage = async (nsId: string, page: number) => {
+  const fetchReposPage = async (nsId: string, page: number, namespaceType?: string) => {
     setIsLoadingRepos(prev => ({ ...prev, [nsId]: true }));
     try {
       const perPage = 50;
-      const res = await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?page=${page}&per_page=${perPage}`);
+      const type = namespaceType || namespaces.find(namespace => namespace.id === nsId)?.type || '';
+      const res = await fetchWithAuth(`/api/v1/source/namespaces/${encodeURIComponent(nsId)}/repos?page=${page}&per_page=${perPage}&type=${encodeURIComponent(type)}`);
       const data = await res.json();
       const newRepos = Array.isArray(data) ? data : [];
       
@@ -1105,7 +1106,10 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     } else {
       newSelectedNamespaces.add(nsId);
       // Check all repos in this namespace
-      const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos`)).json();
+      const namespaceType = namespaces.find(namespace => namespace.id === nsId)?.type || '';
+      const nsRepos = repos[nsId] || await (await fetchWithAuth(
+        `/api/v1/source/namespaces/${encodeURIComponent(nsId)}/repos?type=${encodeURIComponent(namespaceType)}`
+      )).json();
       nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.id));
       if (!repos[nsId]) setRepos(prev => ({ ...prev, [nsId]: nsRepos }));
     }
@@ -1140,7 +1144,7 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     try {
       for (const ns of namespaces) {
         if (!repos[ns.id]) {
-          const res = await fetchWithAuth(`/api/v1/source/namespaces/${ns.id}/repos?per_page=1000&type=${ns.type}`);
+          const res = await fetchWithAuth(`/api/v1/source/namespaces/${encodeURIComponent(ns.id)}/repos?per_page=1000&type=${encodeURIComponent(ns.type)}`);
           if (res.ok) {
             const nsRepos = await res.json();
             setRepos(prev => ({ ...prev, [ns.id]: nsRepos }));
