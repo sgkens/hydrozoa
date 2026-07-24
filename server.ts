@@ -548,17 +548,59 @@ async function provisionTargetRepository(provider: any, repoName: string, descri
 }
 
 // JWT Middleware
+const verifyHydrozoaToken = (token: string) => {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+
+    const [encodedHeader, encodedPayload, encodedSignature] = parts;
+    const header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8"));
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+
+    if (header?.alg !== "HS256" || !payload || typeof payload !== "object") {
+      return null;
+    }
+
+    const expectedSignature = crypto
+      .createHmac("sha256", JWT_SECRET)
+      .update(`${encodedHeader}.${encodedPayload}`)
+      .digest();
+    const suppliedSignature = Buffer.from(encodedSignature, "base64url");
+
+    if (
+      suppliedSignature.length !== expectedSignature.length ||
+      !crypto.timingSafeEqual(suppliedSignature, expectedSignature)
+    ) {
+      return null;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      (typeof payload.exp === "number" && now >= payload.exp) ||
+      (typeof payload.nbf === "number" && now < payload.nbf)
+    ) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+};
+
 const authenticateToken = (req: any, res: any, next: any) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  const [scheme, token] = typeof authHeader === "string"
+    ? authHeader.trim().split(/\s+/, 2)
+    : [];
 
-  if (!token) return res.sendStatus(401);
+  if (scheme !== "Bearer" || !token) return res.sendStatus(401);
 
-  jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-    if (err) return res.sendStatus(403);
-    req.user = user;
-    next();
-  });
+  const user = verifyHydrozoaToken(token);
+  if (!user) return res.sendStatus(403);
+
+  req.user = user;
+  next();
 };
 
 // --- Sync Engine ---
@@ -2242,4 +2284,10 @@ async function startServer() {
 }
 
 sysLog.info("Calling startServer...");
-startServer();
+startServer().catch((err) => {
+  sysLog.error(`Server startup failed: ${err instanceof Error ? err.message : err}`);
+  if (err instanceof Error && err.stack) {
+    console.error(err.stack);
+  }
+  process.exit(1);
+});
