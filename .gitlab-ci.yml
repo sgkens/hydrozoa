@@ -10,9 +10,11 @@ variables:
   # Global variables
 
 # 1. Versioning Stage
+# Host already has PowerShell installed
 generate_version:
   stage: version
-  image: mcr.microsoft.com/powershell:lts-alpine
+  tags:
+    - linux-shell
   script:
     - pwsh -File devops/generate-build-env.ps1
     - cat build.env
@@ -25,7 +27,8 @@ generate_version:
 # 2. Frontend Build Stage
 build_frontend:
   stage: build
-  image: node:20-alpine
+  tags:
+    - linux-shell
   script:
     - npm install
     - npm run build
@@ -37,24 +40,24 @@ build_frontend:
 # 3. Lint/Test Stage
 lint_code:
   stage: lint
-  image: node:20-alpine
+  tags:
+    - linux-shell
   script:
     - npm install
     - npm run lint
 
 # 4. Docker Build Stage
+# Host already has Docker and Git installed
 build_image:
   stage: docker-build
-  image: docker:24.0.5
-  services:
-    - docker:24.0.5-dind
+  tags:
+    - linux-shell
   needs:
     - job: generate_version
       artifacts: true
     - job: build_frontend
       artifacts: true
   before_script:
-    - apk add --no-cache git
     - export DOCKER_IMAGE="index.docker.io/${DOCKER_HUB_USER:-sgkens}/hydrozoa"
   script:
     - echo "Building image for version $BUILD_VERSION"
@@ -74,16 +77,14 @@ build_image:
 # 5. Docker Push Stage
 push_image:
   stage: docker-push
-  image: docker:24.0.5
-  services:
-    - docker:24.0.5-dind
+  tags:
+    - linux-shell
   needs:
     - job: generate_version
       artifacts: true
     - job: build_image
       artifacts: true
   before_script:
-    - apk add --no-cache git
     - export DOCKER_IMAGE="index.docker.io/${DOCKER_HUB_USER:-sgkens}/hydrozoa"
   script:
     - docker load < hydrozoa_image.tar
@@ -97,14 +98,13 @@ push_image:
 # 6. GitLab Release Stage
 create_release:
   stage: release
-  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  tags:
+    - linux-shell
   needs:
     - job: generate_version
       artifacts: true
     - job: build_frontend
       artifacts: true
-  before_script:
-    - apk add --no-cache zip curl
   script:
     - echo "Creating release for version $BUILD_VERSION"
     - PACKAGE_NAME="hydrozoa"

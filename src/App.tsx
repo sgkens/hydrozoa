@@ -948,6 +948,28 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
 
   const [isSaving, setIsSaving] = useState(false);
 
+  const handleDeleteMirror = async (e: React.MouseEvent, repoName: string) => {
+    e.stopPropagation();
+    if (!confirm(`Are you sure you want to permanently decommission mirroring for ${repoName}?`)) return;
+    
+    const existingSync = syncMatrix.find(m => m.source_repo === repoName);
+    if (!existingSync) return;
+
+    try {
+      const res = await fetchWithAuth(`/api/v1/system/sync-matrix/${existingSync.id}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        addToast('Mirror Decommissioned', `${repoName} has been removed from the sync matrix.`, 'success');
+        onRefresh();
+      } else {
+        addToast('Action Failed', 'The server could not process the decommission request.', 'error');
+      }
+    } catch (err) {
+      addToast('System Error', 'Failed to communicate with the Hydrozoa backend.', 'error');
+    }
+  };
+
   // Initialize from syncMatrix
   useEffect(() => {
     if (syncMatrix.length > 0 && selectedRepos.size === 0) {
@@ -1047,12 +1069,17 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
     const newSelectedNamespaces = new Set(selectedNamespaces);
     const newSelectedRepos = new Set(selectedRepos);
     const ns = namespaces.find(n => n.id === nsId);
+    const isSelected = selectedNamespaces.has(nsId);
 
-    if (selectedNamespaces.has(nsId)) {
+    if (isSelected) {
       newSelectedNamespaces.delete(nsId);
       // Uncheck all repos in this namespace
       const nsRepos = repos[nsId] || await (await fetchWithAuth(`/api/v1/source/namespaces/${nsId}/repos?type=${ns?.type || ''}`)).json();
-      nsRepos.forEach((r: Repository) => newSelectedRepos.delete(r.name));
+      nsRepos.forEach((r: Repository) => {
+        if (!syncMatrix.some(item => item.source_repo === r.name)) {
+          newSelectedRepos.delete(r.name);
+        }
+      });
     } else {
       newSelectedNamespaces.add(nsId);
       // Check all repos in this namespace
@@ -1095,17 +1122,31 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   };
 
   const selectAll = async () => {
-    const newSelectedNamespaces = new Set(namespaces.map(n => n.id));
     const newSelectedRepos = new Set(selectedRepos);
+    const newSelectedNamespaces = new Set(namespaces.map(n => n.id));
     
-    for (const ns of namespaces) {
-      const nsRepos = repos[ns.id] || await (await fetchWithAuth(`/api/v1/source/namespaces/${ns.id}/repos?type=${ns.type}`)).json();
-      nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.name));
-      if (!repos[ns.id]) setRepos(prev => ({ ...prev, [ns.id]: nsRepos }));
+    addToast('Batch Processing', 'Preparing to select all repositories from source...', 'info');
+    
+    try {
+      for (const ns of namespaces) {
+        if (!repos[ns.id]) {
+          const res = await fetchWithAuth(`/api/v1/source/namespaces/${ns.id}/repos?per_page=1000&type=${ns.type}`);
+          if (res.ok) {
+            const nsRepos = await res.json();
+            setRepos(prev => ({ ...prev, [ns.id]: nsRepos }));
+            nsRepos.forEach((r: Repository) => newSelectedRepos.add(r.name));
+          }
+        } else {
+          repos[ns.id].forEach((r: Repository) => newSelectedRepos.add(r.name));
+        }
+      }
+      
+      setSelectedNamespaces(newSelectedNamespaces);
+      setSelectedRepos(newSelectedRepos);
+      addToast('Selection Complete', 'All repositories have been checked.', 'success');
+    } catch (err) {
+      addToast('Selection Error', 'Failed to retrieve some nodes during batch selection.', 'error');
     }
-    
-    setSelectedNamespaces(newSelectedNamespaces);
-    setSelectedRepos(newSelectedRepos);
   };
 
   const selectNamespaceAll = async (e: React.MouseEvent, nsId: string) => {
@@ -1172,8 +1213,12 @@ const SourceSelection = ({ providers, onRefresh, namespaces, setNamespaces, setP
   };
 
   const deselectAll = () => {
+    // Only deselect those NOT in the syncMatrix
+    const newSelectedRepos = new Set<string>();
+    syncMatrix.forEach(item => newSelectedRepos.add(item.source_repo));
+    
+    setSelectedRepos(newSelectedRepos);
     setSelectedNamespaces(new Set());
-    setSelectedRepos(new Set());
   };
 
   const sourceProviderObj = providers.find(p => p.isSource);
